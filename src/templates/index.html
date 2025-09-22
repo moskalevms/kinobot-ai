@@ -1,0 +1,110 @@
+<!-- templates/index.html -->
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Kinobot AI — Подбор фильмов</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="container">
+        <h1>🎬 Kinobot AI</h1>
+        <p class="subtitle">Ваш персональный ИИ-помощник по подбору фильмов</p>
+
+        <div class="form-group">
+            <label for="user-input">Опишите, что вы хотите посмотреть:</label>
+            <input type="text" id="user-input" placeholder="например: лёгкую комедию 2010-х с рейтингом выше 7" class="placeholder" style="width: 100%; padding: 12px; font-size: 16px;">
+        </div>
+
+        <button id="send-btn">Найти фильм</button>
+        <button id="clear-btn" class="secondary">Очистить</button>
+
+        <!-- Индикатор загрузки -->
+        <div id="loading" class="loading hidden">Думаю... 🤖</div>
+
+        <!-- Результат -->
+        <div id="result" class="result-box hidden">
+            <h3 id="result-title">🎬 Рекомендация</h3>
+            <p><span id="result-description"></span></p>
+            <p><strong>ℹ️ Источник:</strong> <span id="result-source">ИИ-ассистент</span></p>
+        </div>
+
+        <!-- Ошибки -->
+        <div id="error" class="result-box hidden" style="border-left-color: #e53e3e; color: #c53030;">
+            <h3>Ошибка</h3>
+            <p id="error-text"></p>
+        </div>
+
+        <!-- Статус-бар -->
+        <div class="status-bar" id="status-bar">Готов к работе</div>
+    </div>
+
+    <script>
+        const userInput = document.getElementById('user-input');
+        const sendBtn = document.getElementById('send-btn');
+        const clearBtn = document.getElementById('clear-btn');
+        const loadingDiv = document.getElementById('loading');
+        const resultDiv = document.getElementById('result');
+        const errorDiv = document.getElementById('error');
+        const statusDiv = document.getElementById('status-bar');
+
+        const resultDescription = document.getElementById('result-description');
+
+        const errorText = document.getElementById('error-text');
+
+        sendBtn.addEventListener('click', async () => {
+            const message = userInput.value.trim();
+            if (!message) {
+                alert("Пожалуйста, введите запрос");
+                return;
+            }
+
+            // Скрываем прошлые результаты
+            resultDiv.classList.add('hidden');
+            errorDiv.classList.add('hidden');
+            loadingDiv.classList.remove('hidden');
+            statusDiv.textContent = 'Думаю... 🤖';
+
+            try {
+                const response = await fetch('/chat', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ message })
+                });
+
+                loadingDiv.classList.add('hidden');
+
+                if (response.ok) {
+                    const data = await response.json();
+                    resultDescription.textContent = data.response;
+                    resultDiv.classList.remove('hidden');
+                    statusDiv.textContent = 'Готово!';
+                } else {
+                    const errorData = await response.json();
+                    errorText.textContent = errorData.error || "Неизвестная ошибка";
+                    errorDiv.classList.remove('hidden');
+                    statusDiv.textContent = 'Ошибка';
+                }
+            } catch (e) {
+                loadingDiv.classList.add('hidden');
+                errorText.textContent = `Ошибка: ${e.message}`;
+                errorDiv.classList.remove('hidden');
+                statusDiv.textContent = 'Ошибка соединения';
+            }
+        });
+
+        // Enter для отправки
+        userInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') sendBtn.click();
+        });
+
+        // Очистка
+        clearBtn.addEventListener('click', () => {
+            userInput.value = '';
+            resultDiv.classList.add('hidden');
+            errorDiv.classList.add('hidden');
+            statusDiv.textContent = 'Форма очищена';
+        });
+    </script>
+</body>
+</html>

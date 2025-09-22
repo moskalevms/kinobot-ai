@@ -1,0 +1,133 @@
+/* static/style.css */
+body {
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    background: linear-gradient(135deg, #6e8efb, #a777e3);
+    margin: 0;
+    padding: 20px;
+    color: #333;
+}
+
+.container {
+    max-width: 800px;
+    margin: 0 auto;
+    background: white;
+    padding: 30px;
+    border-radius: 15px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.15);
+}
+
+h1 {
+    color: #5a67d8;
+    text-align: center;
+    margin-bottom: 5px;
+}
+
+.subtitle {
+    text-align: center;
+    color: #718096;
+    margin-bottom: 25px;
+}
+
+.form-group {
+    margin-bottom: 20px;
+}
+
+label {
+    display: block;
+    margin-bottom: 5px;
+    font-weight: 600;
+}
+
+input[type="text"] {
+    width: 100%;
+    padding: 10px;
+    border: 2px solid #e2e8f0;
+    border-radius: 8px;
+    font-size: 16px;
+    transition: border 0.3s;
+}
+
+input[type="text"]:focus {
+    border-color: #6e8efb;
+    outline: none;
+}
+
+.placeholder {
+    color: #a0aec0;
+}
+
+button {
+    background: #6e8efb;
+    color: white;
+    border: none;
+    padding: 12px 24px;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 16px;
+    margin-right: 10px;
+    transition: background 0.3s;
+}
+
+button:hover {
+    background: #5a67d8;
+}
+
+button.secondary {
+    background: #e2e8f0;
+    color: #4a5568;
+}
+
+button.secondary:hover {
+    background: #cbd5e0;
+}
+
+button:disabled {
+    background: #a0aec0;
+    cursor: not-allowed;
+}
+
+.mode-toggle {
+    display: flex;
+    gap: 15px;
+    align-items: center;
+    margin-bottom: 20px;
+}
+
+.result-box {
+    background: #f7fafc;
+    padding: 20px;
+    border-radius: 10px;
+    margin-top: 20px;
+    border-left: 4px solid #6e8efb;
+}
+
+.result-box h3 {
+    margin-top: 0;
+    color: #2d3748;
+}
+
+.loading {
+    text-align: center;
+    color: #a0aec0;
+    font-style: italic;
+}
+
+.genres-hint {
+    font-size: 12px;
+    color: #718096;
+    margin-top: -10px;
+    margin-bottom: 15px;
+}
+
+.status-bar {
+    margin-top: 30px;
+    padding: 10px;
+    background: #edf2f7;
+    border-radius: 8px;
+    font-size: 14px;
+    color: #4a5568;
+}
+
+.hidden {
+    display: none;
+}
