@@ -1,6 +1,6 @@
 import tkinter as tk
 from tkinter import ttk, scrolledtext
-from agent import MovieAgent
+from movie_agent import MovieAgent
 
 
 class MovieBotGUI:

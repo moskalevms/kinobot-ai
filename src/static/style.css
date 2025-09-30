@@ -52,10 +52,6 @@ input[type="text"]:focus {
     outline: none;
 }
 
-.placeholder {
-    color: #a0aec0;
-}
-
 button {
     background: #6e8efb;
     color: white;
@@ -66,6 +62,7 @@ button {
     font-size: 16px;
     margin-right: 10px;
     transition: background 0.3s;
+    width: 100%;
 }
 
 button:hover {
@@ -86,48 +83,66 @@ button:disabled {
     cursor: not-allowed;
 }
 
-.mode-toggle {
-    display: flex;
-    gap: 15px;
-    align-items: center;
-    margin-bottom: 20px;
+.hidden {
+    display: none;
 }
 
-.result-box {
-    background: #f7fafc;
-    padding: 20px;
-    border-radius: 10px;
-    margin-top: 20px;
-    border-left: 4px solid #6e8efb;
-}
-
-.result-box h3 {
-    margin-top: 0;
-    color: #2d3748;
-}
-
-.loading {
-    text-align: center;
-    color: #a0aec0;
-    font-style: italic;
-}
-
-.genres-hint {
-    font-size: 12px;
-    color: #718096;
-    margin-top: -10px;
+/* === Стили чата === */
+.chat-messages {
+    max-height: 400px;
+    overflow-y: auto;
     margin-bottom: 15px;
+    padding: 10px 0;
+    border-bottom: 1px solid #edf2f7;
+}
+
+.message {
+    padding: 12px 16px;
+    margin-bottom: 16px;
+    border-radius: 12px;
+    line-height: 1.5;
+    max-width: 85%;
+    word-wrap: break-word;
+    position: relative;
+}
+
+.user-message {
+    background: #6e8efb;
+    color: white;
+    margin-left: auto;
+    text-align: right;
+}
+
+.bot-message {
+    background: #f1f5f9;
+    color: #1a202c;
+    margin-right: auto;
+}
+
+.chat-input {
+    display: flex;
+    gap: 10px;
+}
+
+.chat-input input {
+    flex: 1;
+    padding: 10px;
+    border: 2px solid #e2e8f0;
+    border-radius: 8px;
+    font-size: 16px;
+}
+
+.chat-input button {
+    padding: 10px 20px;
+    width: auto;
 }
 
 .status-bar {
-    margin-top: 30px;
+    margin-top: 20px;
     padding: 10px;
     background: #edf2f7;
     border-radius: 8px;
     font-size: 14px;
     color: #4a5568;
-}
-
-.hidden {
-    display: none;
+    text-align: center;
 }
