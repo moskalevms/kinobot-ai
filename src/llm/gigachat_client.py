@@ -27,7 +27,7 @@ class GigaChatClient:
             'RqUID': RqUID,
             'Content-Type': 'application/x-www-form-urlencoded',
             'Accept': 'application/json',
-            'Authorization': f'Basic {self.auth_key}'  # ← вот где используется твой "Authorization Key"
+            'Authorization': f'Basic {self.auth_key}'
         }
 
         data = {
