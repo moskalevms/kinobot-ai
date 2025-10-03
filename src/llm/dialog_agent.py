@@ -180,7 +180,7 @@ class DialogMovieAgent:
                     genre_name=primary_genre,
                     min_imdb_rating=min_rating,
                     country=country,
-                    limit=5,
+                    limit=100,
                     movie_type='movie'
                 )
                 if movies and not (isinstance(movies, dict) and "error" in movies):

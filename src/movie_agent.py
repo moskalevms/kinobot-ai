@@ -1,14 +1,15 @@
 import os
 import logging
-import math
 from pathlib import Path
 from typing import Optional, List, Dict, Union, Any
 from dataclasses import dataclass
+from enum import Enum
 
 import pandas as pd
 from dotenv import load_dotenv
 
 from src.client.kinopoisk_client import KinopoiskClient
+from src.utils.movie_filter import filter_movies_by_quality
 
 logger = logging.getLogger(__name__)
 load_dotenv()
@@ -23,11 +24,22 @@ class SearchRequest:
     studio: Optional[str] = None
     country: Optional[str] = None
     min_rating: Optional[float] = None
-    limit: int = 10
+    limit: int = 10  # ← сколько вернуть пользователю
     movie_type: str = 'movie'
     query: Optional[str] = None
     is_top_request: bool = False
     is_new_request: bool = False
+
+
+# Фиксированный лимит для сбора кандидатов (не зависит от запроса пользователя)
+CANDIDATE_LIMIT = 150
+
+
+class SearchStrategy(Enum):
+    TOP_GENRE = "top_genre"
+    BY_PERSON = "by_person"
+    FREE_TEXT = "free_text"
+    BY_TITLE = "by_title"
 
 
 class MovieAgent:
@@ -54,7 +66,9 @@ class MovieAgent:
             return self._fallback_to_csv(genre_name, year, limit)
 
         try:
-            # Создаем поисковый запрос
+            is_top = self._is_top_request(query)
+            is_new = self._is_new_request(query, year)
+
             search_request = SearchRequest(
                 genre=genre_name,
                 year=year,
@@ -66,19 +80,16 @@ class MovieAgent:
                 limit=limit,
                 movie_type=movie_type,
                 query=query,
-                is_top_request=self._is_top_request(query),
-                is_new_request=self._is_new_request(query, year)
+                is_top_request=is_top,
+                is_new_request=is_new
             )
 
-            # Многоуровневый поиск
             movies_data = self._multi_strategy_search(search_request)
 
             if not movies_data:
                 return []
 
-            # Преобразуем в единый формат с приоритетом для США
             result = self._format_movies(movies_data, search_request)
-
             logger.info(f"Найдено фильмов: {len(result)}")
             return result[:limit]
 
@@ -86,53 +97,182 @@ class MovieAgent:
             logger.error(f"Ошибка в recommend_movies: {e}", exc_info=True)
             return {"error": str(e)}
 
+    def _is_top_request(self, query: Optional[str]) -> bool:
+        if not query:
+            return False
+        q = query.lower()
+        indicators = ['лучш', 'топ', 'рейтинг', 'best', 'top']
+        return any(ind in q for ind in indicators)
+
+    def _is_new_request(self, query: Optional[str], year: Optional[int]) -> bool:
+        if year and year >= 2023:
+            return True
+        if not query:
+            return False
+        new_keywords = ['новые', 'свежие', 'недавние', '2024', '2025']
+        return any(keyword in query.lower() for keyword in new_keywords)
+
+    def _determine_strategy(self, request: SearchRequest) -> SearchStrategy:
+        if request.query:
+            q = request.query.lower()
+            if any(phrase in q for phrase in ["расскажи о", "что за фильм", "информация о", "описание фильма"]):
+                return SearchStrategy.BY_TITLE
+            if request.actor or request.director:
+                return SearchStrategy.BY_PERSON
+            if any(ind in q for ind in ['лучш', 'топ', 'top', 'best']) and any(char.isdigit() for char in q):
+                return SearchStrategy.TOP_GENRE
+            if request.is_top_request:
+                return SearchStrategy.TOP_GENRE
+        return SearchStrategy.FREE_TEXT
+
     def _multi_strategy_search(self, request: SearchRequest) -> List[Dict]:
-        """Многоуровневый поиск фильмов"""
-        all_movies = []
+        strategy = self._determine_strategy(request)
+        logger.info(f"[MovieAgent] Выбрана стратегия: {strategy.value}")
 
-        # Стратегия 1: Поиск в топ-250 для качественных запросов
-        if request.is_top_request or not request.genre:
-            top_movies = self.kinopoisk_client.search_top250(
-                genre=request.genre,
+        if strategy == SearchStrategy.TOP_GENRE:
+            return self._search_top_genre(request)
+        elif strategy == SearchStrategy.BY_PERSON:
+            return self._search_by_person(request)
+        elif strategy == SearchStrategy.FREE_TEXT:
+            return self._search_free_text(request)
+        else:
+            return []
+
+    def _search_top_genre(self, request: SearchRequest) -> List[Dict]:
+        # Шаг 1: поиск в топ-250
+        movies_data = self.kinopoisk_client.search_top250(
+            genre=request.genre,
+            year=request.year,
+            country=request.country,
+            limit=CANDIDATE_LIMIT
+        )
+        if movies_data and movies_data.get('docs'):
+            filtered = filter_movies_by_quality(
+                movies_data['docs'],
                 year=request.year,
-                country=request.country,
-                limit=request.limit
+                min_rating=7.5
             )
-            if top_movies and top_movies.get('docs'):
-                all_movies.extend(top_movies['docs'])
+            logger.info(f"[MovieAgent] После фильтрации: {len(filtered)} из {len(movies_data['docs'])}")
+            if len(filtered) >= max(3, request.limit // 2):
+                return filtered[:request.limit]
 
-        # Стратегия 2: Обычный поиск по рейтингу
-        if len(all_movies) < request.limit:
-            regular_movies = self.kinopoisk_client.search_movies(
-                genre=request.genre,
+        # Шаг 2: fallback — обычный поиск с высоким рейтингом
+        logger.info("[MovieAgent] Fallback: TOP_GENRE → обычный поиск с rating ≥7.5")
+        movies_data = self.kinopoisk_client.search_movies(
+            genre=request.genre,
+            year=request.year,
+            country=request.country,
+            imdb_rating_min=7.5,
+            movie_type=request.movie_type,
+            limit=CANDIDATE_LIMIT
+        )
+        if movies_data and movies_data.get('docs'):
+            filtered = filter_movies_by_quality(
+                movies_data['docs'],
                 year=request.year,
-                actor=request.actor,
-                imdb_rating_min=request.min_rating,
-                movie_type=request.movie_type,
-                query=request.query,
-                limit=request.limit * 2,  # Берем с запасом
-                country=request.country
+                min_rating=7.5
             )
-            if regular_movies and regular_movies.get('docs'):
-                # Добавляем только новые фильмы
-                existing_ids = {m['id'] for m in all_movies}
-                for movie in regular_movies['docs']:
-                    if movie['id'] not in existing_ids:
-                        all_movies.append(movie)
+            return filtered[:request.limit]
+        return []
 
-        return all_movies
+    def _search_by_person(self, request: SearchRequest) -> List[Dict]:
+        movies_data = self.kinopoisk_client.search_movies(
+            genre=request.genre,
+            year=request.year,
+            actor=request.actor,
+            director=request.director,
+            imdb_rating_min=request.min_rating or 6.0,
+            movie_type=request.movie_type,
+            country=request.country,
+            limit=CANDIDATE_LIMIT
+        )
+        if movies_data and movies_data.get('docs'):
+            filtered = filter_movies_by_quality(
+                movies_data['docs'],
+                year=request.year,
+                min_rating=request.min_rating or 6.0,
+                min_votes_override=self._calculate_min_votes_for_person(request.year)
+            )
+            logger.info(f"[MovieAgent] После фильтрации: {len(filtered)} из {len(movies_data['docs'])}")
+            if len(filtered) >= max(3, request.limit // 2):
+                return filtered[:request.limit]
+
+        # Fallback: без фильтра по голосам
+        logger.info("[MovieAgent] Fallback: поиск по персоне без фильтра голосов")
+        movies_data = self.kinopoisk_client.search_movies(
+            genre=request.genre,
+            year=request.year,
+            actor=request.actor,
+            director=request.director,
+            movie_type=request.movie_type,
+            country=request.country,
+            limit=CANDIDATE_LIMIT
+        )
+        if movies_data and movies_data.get('docs'):
+            return [
+                m for m in movies_data['docs']
+                if (m.get('rating', {}).get('imdb') or m.get('rating', {}).get('kp') or 0) >= 6.0
+            ][:request.limit]
+        return []
+
+    def _search_free_text(self, request: SearchRequest) -> List[Dict]:
+        movies_data = self.kinopoisk_client.search_movies(
+            query=request.query,
+            genre=request.genre,
+            year=request.year,
+            country=request.country,
+            imdb_rating_min=request.min_rating or 6.5,
+            movie_type=request.movie_type,
+            limit=CANDIDATE_LIMIT
+        )
+        if movies_data and movies_data.get('docs'):
+            filtered = filter_movies_by_quality(
+                movies_data['docs'],
+                year=request.year,
+                min_rating=request.min_rating or 6.5
+            )
+            logger.info(f"[MovieAgent] После фильтрации: {len(filtered)} из {len(movies_data['docs'])}")
+            if filtered:
+                return filtered[:request.limit]
+
+        # Fallback: без query
+        logger.info("[MovieAgent] Fallback: free text → search без query")
+        movies_data = self.kinopoisk_client.search_movies(
+            genre=request.genre,
+            year=request.year,
+            country=request.country,
+            imdb_rating_min=request.min_rating or 6.5,
+            movie_type=request.movie_type,
+            limit=CANDIDATE_LIMIT
+        )
+        if movies_data and movies_data.get('docs'):
+            filtered = filter_movies_by_quality(
+                movies_data['docs'],
+                year=request.year,
+                min_rating=request.min_rating or 6.5
+            )
+            return filtered[:request.limit]
+        return []
+
+    def _calculate_min_votes_for_person(self, year: Optional[int]) -> int:
+        current_year = 2025
+        if not year:
+            return 5000
+        diff = current_year - year
+        if diff <= 2:
+            return 1000
+        elif diff <= 5:
+            return 3000
+        else:
+            return 5000
 
     def _format_movies(self, movies_data: List[Dict], request: SearchRequest) -> List[Dict]:
-        """Форматирование результатов с приоритетом для США"""
         formatted = []
-
         for movie in movies_data:
             genres = ', '.join([g['name'] for g in movie.get('genres', []) if g.get('name')])
             countries = ', '.join([c['name'] for c in movie.get('countries', []) if c.get('name')])
-
             rating_imdb = movie.get('rating', {}).get('imdb')
             rating_kp = movie.get('rating', {}).get('kp')
-
             formatted_movie = {
                 'id': movie.get('id'),
                 'title': movie.get('name') or '—',
@@ -147,39 +287,22 @@ class MovieAgent:
             }
             formatted.append(formatted_movie)
 
-        # Сортируем: сначала фильмы из США, затем по рейтингу
-        return sorted(formatted,
-                      key=lambda x: (
-                          not x.get('is_us_production', False),  # США сначала
-                          x.get('rating_imdb') or x.get('rating_kp') or 0  # затем по рейтингу
-                      ),
-                      reverse=True)
+        return sorted(
+            formatted,
+            key=lambda x: (
+                not x.get('is_us_production', False),
+                x.get('rating_imdb') or x.get('rating_kp') or 0
+            ),
+            reverse=True
+        )
 
     def _is_us_production(self, countries: List[Dict]) -> bool:
-        """Проверяет, является ли фильм американским"""
         if not countries:
             return False
         us_keywords = ['сша', 'америка', 'usa', 'united states', 'соединённые штаты']
         return any(country.get('name', '').lower() in us_keywords for country in countries)
 
-    def _is_top_request(self, query: Optional[str]) -> bool:
-        """Определяет, является ли запрос поиском лучших фильмов"""
-        if not query:
-            return False
-        top_keywords = ['лучшие', 'топ', 'рейтинг', 'лучший', 'топ10', 'топ 10']
-        return any(keyword in query.lower() for keyword in top_keywords)
-
-    def _is_new_request(self, query: Optional[str], year: Optional[int]) -> bool:
-        """Определяет, является ли запрос поиском новых фильмов"""
-        if year and year >= 2023:
-            return True
-        if not query:
-            return False
-        new_keywords = ['новые', 'свежие', 'недавние', '2024', '2025']
-        return any(keyword in query.lower() for keyword in new_keywords)
-
     def _fallback_to_csv(self, genre_name: Optional[str], year: Optional[int], limit: int) -> List[Dict]:
-        """Fallback на CSV данные"""
         try:
             df = self._load_data_from_csv()
             filtered = df.copy()
@@ -244,7 +367,6 @@ class MovieAgent:
     def search_by_title(self, title: str) -> List[Dict]:
         if not self.use_api or not self.kinopoisk_client:
             return []
-
         try:
             base_url = f"{self.kinopoisk_client.base_url.split('/v1.4')[0]}/v1.4/movie"
             params = {
@@ -256,7 +378,6 @@ class MovieAgent:
             if resp.ok:
                 data = resp.json()
                 docs = data.get('docs', [])
-
                 for movie in docs:
                     name = movie.get('name', '').lower()
                     alt_names = [n.lower() for n in movie.get('alternativeName', []) if n]
@@ -277,7 +398,6 @@ class MovieAgent:
                             'rating_kp': rating_kp,
                             'description': (movie.get('description') or '')[:500]
                         }]
-
                 if docs:
                     m = docs[0]
                     genres = ', '.join([g['name'] for g in m.get('genres', []) if g.get('name')])

@@ -44,7 +44,7 @@ class KinopoiskClient:
             kp_rating_min: Optional[float] = None,
             movie_type: str = 'movie',
             query: Optional[str] = None,
-            limit: int = 50,
+            limit: int = 100,
             country: Optional[str] = None
     ) -> Optional[dict]:
         params = {
@@ -74,9 +74,9 @@ class KinopoiskClient:
         if country:
             params['countries.name'] = country
         if imdb_rating_min is not None:
-            params['rating.imdb'] = str(imdb_rating_min)
+            params['rating.imdb'] = f"{imdb_rating_min}-10"
         if kp_rating_min is not None:
-            params['rating.kp'] = str(kp_rating_min)
+            params['rating.kp'] = f"{kp_rating_min}-10"
 
         logger.info(f"[KinopoiskClient] Запрос: {params}")
 
@@ -92,76 +92,13 @@ class KinopoiskClient:
                 logger.info("[KinopoiskClient] API вернул пустой результат")
                 return None
 
-            # Новая логика фильтрации с динамическими порогами
-            filtered_docs = self._filter_movies_by_quality(raw_docs, year)
-            logger.info(f"[KinopoiskClient] После фильтрации по качеству: {len(filtered_docs)} фильмов")
-
-            if not filtered_docs:
-                logger.info("[KinopoiskClient] Все фильмы отфильтрованы")
-                return None
-
-            result_docs = filtered_docs[:limit]
-            logger.info(f"[KinopoiskClient] Возвращаем {len(result_docs)} фильмов")
-            data['docs'] = result_docs
+            # ⚠️ Фильтрация теперь делается ВНЕ этого класса!
+            data['docs'] = raw_docs
             return data
 
         except Exception as e:
             logger.error(f"[KinopoiskClient] Ошибка поиска фильмов: {e}")
             return None
-
-    def _filter_movies_by_quality(self, movies: List[Dict], year: Optional[int] = None) -> List[Dict]:
-        """Фильтрация фильмов по качеству с динамическими порогами"""
-        filtered = []
-
-        for movie in movies:
-            rating = movie.get('rating', {})
-            votes = movie.get('votes', {})
-
-            # Получаем рейтинги
-            imdb_rating = rating.get('imdb')
-            kp_rating = rating.get('kp')
-
-            # Получаем голоса
-            imdb_votes = votes.get('imdb', 0)
-            kp_votes = votes.get('kp', 0)
-
-            # Определяем лучший рейтинг (IMDB приоритетнее)
-            best_rating = imdb_rating if imdb_rating else kp_rating
-            best_votes = imdb_votes if imdb_rating else kp_votes
-
-            if not best_rating or best_rating < 6.0:
-                continue
-
-            # Динамические пороги голосов в зависимости от года
-            min_votes = self._calculate_min_votes(year)
-            if best_votes < min_votes:
-                continue
-
-            # Проверка наличия основных данных
-            if not movie.get('name') or not movie.get('year'):
-                continue
-
-            filtered.append(movie)
-
-        return filtered
-
-    def _calculate_min_votes(self, year: Optional[int] = None) -> int:
-        """Динамический расчет минимального количества голосов"""
-        current_year = 2025
-
-        if not year:
-            return 10000  # Для фильмов без указания года
-
-        year_diff = current_year - year
-
-        if year_diff <= 1:  # Новинки (2024-2025)
-            return 1000
-        elif year_diff <= 3:  # Недавние (2022-2023)
-            return 5000
-        elif year_diff <= 10:  # Современные (2015-2021)
-            return 10000
-        else:  # Классика (до 2015)
-            return 20000
 
     def get_movie_details(self, movie_id: int) -> Optional[dict]:
         url = f"{self.base_url}/{movie_id}"
@@ -174,11 +111,10 @@ class KinopoiskClient:
             return None
 
     def search_top250(self, genre: Optional[str] = None, year: Optional[int] = None,
-                      country: Optional[str] = None, limit: int = 20) -> Optional[dict]:
-        """Поиск в топ-250 фильмах"""
+                      country: Optional[str] = None, limit: int = 100) -> Optional[dict]:
         params = {
             'lists': 'top250',
-            'limit': limit * 2,  # Берем с запасом для фильтрации
+            'limit': min(limit, 250),
             'selectFields': [
                 'id', 'name', 'year', 'genres', 'rating', 'votes',
                 'description', 'poster', 'countries'
@@ -197,15 +133,7 @@ class KinopoiskClient:
         try:
             response = self.session.get(self.base_url, params=params, timeout=10)
             response.raise_for_status()
-            data = response.json()
-
-            # Фильтруем по качеству
-            filtered_docs = self._filter_movies_by_quality(data.get('docs', []), year)
-            data['docs'] = filtered_docs[:limit]
-
-            logger.info(f"[KinopoiskClient] Найдено в топ250: {len(filtered_docs)} фильмов")
-            return data
-
+            return response.json()
         except Exception as e:
             logger.error(f"Ошибка поиска в топ250: {e}")
             return None
