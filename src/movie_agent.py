@@ -1,213 +1,176 @@
 # src/movie_agent.py
-import os
 import logging
-from pathlib import Path
-from typing import Optional, List, Dict, Union
-
-import pandas as pd
-from dotenv import load_dotenv
-
-from src.client.kinopoisk_client import KinopoiskClient
-from config import MIN_VOTES_IMDB, MIN_VOTES_KP
+from typing import List, Dict, Optional, Tuple
+from enum import Enum
+from .kinopoisk_client import KinopoiskClient
+from .recommendation_engine import RecommendationEngine
+from .config import KINOPOISK_API_KEY
 
 logger = logging.getLogger(__name__)
-load_dotenv()
 
+CANDIDATE_LIMIT = 150
+
+class SearchStrategy(Enum):
+    TOP_GENRE = 1
+    BY_PERSON = 2
+    FREE_TEXT = 3
 
 class MovieAgent:
-    def __init__(self, use_api=True):
+    def __init__(self, use_api: bool = True):
         self.use_api = use_api
-        self.data_path = Path(__file__).parent.parent / "data" / "processed" / "imdb" / "imdb_top_1000.csv"
-        self.kinopoisk_client = KinopoiskClient() if use_api else None
+        self.kinopoisk_client = KinopoiskClient(api_key=KINOPOISK_API_KEY)
+        self.recommendation_engine = RecommendationEngine(self.kinopoisk_client)
+        self._search_cache = {}
+        self._last_search_failed = False  # Флаг для отслеживания неудачных поисков
 
-    def _load_data_from_csv(self):
-        df = pd.read_csv(self.data_path)
-        df['Genre'] = df['Genre'].str.lower()
-        df['Series_Title'] = df['Series_Title'].str.title()
-        df['Released_Year'] = pd.to_numeric(df['Released_Year'], errors='coerce')
-        return df
+    def _get_cache_key(self, genre_name, year, year_range, actor, director, country, min_imdb_rating, limit, movie_type, query) -> str:
+        parts = [
+            genre_name or '',
+            str(year),
+            str(year_range),
+            actor or '',
+            director or '',
+            country or '',
+            str(min_imdb_rating),
+            str(limit),
+            movie_type,
+            query or ''
+        ]
+        return '_'.join(parts)
 
     def recommend_movies(
-            self,
-            genre_name: Optional[str] = None,
-            year: Optional[int] = None,
-            actor: Optional[str] = None,
-            director: Optional[str] = None,
-            studio: Optional[str] = None,
-            country: Optional[str] = None,
-            min_imdb_rating: Optional[float] = None,
-            limit: int = 5,
-            movie_type: str = 'movie',
-            query: Optional[str] = None
-    ) -> Union[List[Dict], Dict]:
-        try:
-            if self.use_api and self.kinopoisk_client:
-                effective_country = country if country else "США"
+        self,
+        genre_name: Optional[str] = None,
+        year: Optional[int] = None,
+        year_range: Optional[tuple] = None,
+        actor: Optional[str] = None,
+        director: Optional[str] = None,
+        country: Optional[str] = None,
+        min_imdb_rating: float = 6.5,
+        limit: int = 8,
+        movie_type: str = 'movie',
+        query: Optional[str] = None
+    ) -> List[Dict]:
+        from .config import CACHE_TTL
+        import time
 
-                # Запрашиваем с запасом: чтобы после фильтрации осталось хотя бы `limit`
-                api_limit = max(limit * 4, 20)
+        current_year = 2025
+        if year_range and year_range[1] > current_year:
+            year_range = (year_range[0], current_year)
+            logger.info(f"Корректировка year_range на текущий год: {year_range}")
 
-                movies_data = self.kinopoisk_client.search_movies(
-                    genre=genre_name,
-                    year=year,
-                    actor=actor,
-                    imdb_rating_min=min_imdb_rating,
-                    movie_type=movie_type,
-                    query=query,
-                    limit=api_limit
-                )
+        cache_key = self._get_cache_key(genre_name, year, year_range, actor, director, country, min_imdb_rating, limit, movie_type, query)
 
-                if not movies_data:
-                    return []
+        # Очищаем кэш если предыдущий поиск был неудачным
+        if self._last_search_failed:
+            self._search_cache.clear()
+            self._last_search_failed = False
+            logger.info("[MovieAgent] Кэш очищен из-за предыдущей ошибки поиска")
 
-                # Фильтрация по стране
-                filtered_by_country = []
-                for movie in movies_data['docs']:
-                    countries = [c.get('name') for c in movie.get('countries', []) if c.get('name')]
-                    if effective_country in countries:
-                        filtered_by_country.append(movie)
-                    elif effective_country == "США" and "Соединённые Штаты" in countries:
-                        filtered_by_country.append(movie)
-
-                final_list = filtered_by_country if filtered_by_country else movies_data['docs']
-
-                # Преобразуем в единый формат, но не больше `limit`
-                result = []
-                for m in final_list[:limit]:
-                    genres = ', '.join([g['name'] for g in m.get('genres', []) if g.get('name')])
-                    countries = ', '.join([c['name'] for c in m.get('countries', []) if c.get('name')])
-                    rating_imdb = m.get('rating', {}).get('imdb')
-                    rating_kp = m.get('rating', {}).get('kp')
-                    result.append({
-                        'id': m.get('id'),
-                        'title': m.get('name') or '—',
-                        'year': m.get('year'),
-                        'genre': genres,
-                        'country': countries,
-                        'rating': rating_imdb or rating_kp or '—',
-                        'rating_imdb': rating_imdb,
-                        'rating_kp': rating_kp,
-                        'description': (m.get('description') or '')[:500]
-                    })
-                return result
-
+        # Проверка кэша с TTL
+        if cache_key in self._search_cache:
+            cached_data, timestamp = self._search_cache[cache_key]
+            if time.time() - timestamp < CACHE_TTL:
+                logger.info("[MovieAgent] Кэш HIT")
+                return cached_data
             else:
-                # fallback на CSV
-                df = self._load_data_from_csv()
-                filtered = df.copy()
-                if genre_name:
-                    filtered = filtered[filtered['Genre'].str.contains(genre_name.lower(), na=False)]
-                if year:
-                    filtered = filtered[filtered['Released_Year'] == year]
-                if filtered.empty:
-                    return []
-                sample = filtered.sample(min(limit, len(filtered)))
-                records = sample.to_dict('records')
-                for r in records:
-                    r.update({
-                        'id': None,
-                        'title': r.pop('Series_Title', '—'),
-                        'genre': r.pop('Genre', '—').title(),
-                        'country': 'США',
-                        'rating_imdb': r.get('IMDB_Rating'),
-                        'rating_kp': None,
-                        'rating': r.get('IMDB_Rating', '—'),
-                        'description': 'Описание недоступно в CSV.'
-                    })
-                return records
+                del self._search_cache[cache_key]
+
+        is_top = any(word in (query or '').lower() for word in ['топ', 'лучш', 'рейтинг', 'best', 'top']) if query else False
+
+        try:
+            movies = self.recommendation_engine.get_recommendations(
+                genre_name=genre_name,
+                year=year,
+                year_range=year_range,
+                actor=actor,
+                director=director,
+                country=country,
+                min_imdb_rating=min_imdb_rating,
+                limit=limit,
+                movie_type=movie_type,
+                query=query,
+                is_top=is_top
+            )
+
+            # Устанавливаем флаг неудачного поиска если результатов нет
+            if not movies:
+                self._last_search_failed = True
+                logger.info("[MovieAgent] Поиск не дал результатов, устанавливаем флаг ошибки")
+            else:
+                self._search_cache[cache_key] = (movies, time.time())
+
+            logger.info(f"Найдено {movie_type}: {len(movies)}")
+            return movies
 
         except Exception as e:
             logger.error(f"Ошибка в recommend_movies: {e}", exc_info=True)
-            return {"error": str(e)}
-
-    def get_movie_by_id(self, movie_id: str) -> Optional[Dict]:
-        if not self.use_api or not self.kinopoisk_client:
-            return None
-        try:
-            movie_id_int = int(movie_id)
-            details = self.kinopoisk_client.get_movie_details(movie_id_int)
-            if details:
-                rating_kp = details.get('rating', {}).get('kp')
-                rating_imdb = details.get('rating', {}).get('imdb')
-                genres_list = [g.get('name') for g in details.get('genres', []) if g.get('name')]
-                countries_list = [c.get('name') for c in details.get('countries', []) if c.get('name')]
-                return {
-                    'id': details.get('id'),
-                    'title': details.get('name') or 'Без названия',
-                    'year': details.get('year'),
-                    'genre': ', '.join(genres_list) if genres_list else '—',
-                    'country': ', '.join(countries_list) if countries_list else '—',
-                    'rating': rating_imdb or rating_kp or '—',
-                    'rating_imdb': rating_imdb,
-                    'rating_kp': rating_kp,
-                    'description': (details.get('description') or 'Описание отсутствует.')[:500]
-                }
-        except Exception as e:
-            logger.error(f"Ошибка получения фильма по ID {movie_id}: {e}", exc_info=True)
-        return None
-
+            self._last_search_failed = True
+            return []
 
     def search_by_title(self, title: str) -> List[Dict]:
-        if not self.use_api or not self.kinopoisk_client:
-            return []
-
-    # Используем search_movies с query + фильтрацией по типу "movie"
-    # и дополнительной проверкой на точное совпадение названия
         try:
-        # Сначала пробуем точный поиск через API
-            base_url = f"{self.kinopoisk_client.base_url.split('/v1.4')[0]}/v1.4/movie"
-            params = {
-                'query': title,
-                'limit': 10,  # запрашиваем больше, чтобы отфильтровать
-                'type': 'movie'
-            }
-            resp = self.kinopoisk_client.session.get(base_url, params=params, timeout=10)
-            if resp.ok:
-                data = resp.json()
-                docs = data.get('docs', [])
+            data = self.kinopoisk_client.search_movie_by_title(title, limit=10)
+            if not data or not data.get('docs'):
+                return []
 
-            # Ищем точное или близкое совпадение по названию (регистронезависимо)
-                for movie in docs:
-                    name = movie.get('name', '').lower()
-                    alt_names = [n.lower() for n in movie.get('alternativeName', []) if n]
-                    all_names = [name] + alt_names
-                    if any(title.lower().strip() in n or n in title.lower().strip() for n in all_names):
-                        # Нашли подходящий фильм
-                        genres = ', '.join([g['name'] for g in movie.get('genres', []) if g.get('name')])
-                        countries = ', '.join([c['name'] for c in movie.get('countries', []) if c.get('name')])
-                        rating_imdb = movie.get('rating', {}).get('imdb')
-                        rating_kp = movie.get('rating', {}).get('kp')
-                        return [{
-                            'id': movie.get('id'),
-                            'title': movie.get('name') or '—',
-                            'year': movie.get('year'),
-                            'genre': genres,
-                            'country': countries,
-                            'rating': rating_imdb or rating_kp or '—',
-                            'rating_imdb': rating_imdb,
-                            'rating_kp': rating_kp,
-                            'description': (movie.get('description') or '')[:500]
-                        }]
+            docs = data['docs']
+            user_title_lower = title.lower().strip()
 
-                # Если точного совпадения нет — возвращаем первый фильм (как fallback)
-                if docs:
-                    m = docs[0]
-                    genres = ', '.join([g['name'] for g in m.get('genres', []) if g.get('name')])
-                    countries = ', '.join([c['name'] for c in m.get('countries', []) if c.get('name')])
-                    rating_imdb = m.get('rating', {}).get('imdb')
-                    rating_kp = m.get('rating', {}).get('kp')
-                    return [{
-                        'id': m.get('id'),
-                        'title': m.get('name') or '—',
-                        'year': m.get('year'),
-                        'genre': genres,
-                        'country': countries,
-                        'rating': rating_imdb or rating_kp or '—',
-                        'rating_imdb': rating_imdb,
-                        'rating_kp': rating_kp,
-                        'description': (m.get('description') or '')[:500]
-                    }]
-            return []
+            movie_candidates = [m for m in docs if m.get('type') == 'movie']
+
+            if not movie_candidates:
+                return []
+
+            best_match = None
+            for movie in movie_candidates:
+                name = movie.get('name') or ''
+                alt_names = movie.get('alternativeName') or []
+
+                if not isinstance(alt_names, list):
+                    alt_names = [alt_names] if alt_names else []
+
+                all_names = [name] + [n for n in alt_names if n]
+                all_names_lower = [str(n).lower().strip() for n in all_names if n]
+
+                if any(user_title_lower == n for n in all_names_lower):
+                    best_match = movie
+                    break
+
+            if best_match is None:
+                best_match = movie_candidates[0]
+
+            genres = ', '.join([g['name'] for g in best_match.get('genres', []) if g.get('name')])
+            countries = ', '.join([c['name'] for c in best_match.get('countries', []) if c.get('name')])
+            rating_imdb = best_match.get('rating', {}).get('imdb')
+            rating_kp = best_match.get('rating', {}).get('kp')
+            poster_url = best_match.get('poster', {}).get('url', '').strip()
+
+            return [{
+                'id': best_match.get('id'),
+                'title': best_match.get('name') or '—',
+                'year': best_match.get('year'),
+                'genre': genres,
+                'country': countries,
+                'rating': rating_imdb or rating_kp or '—',
+                'rating_imdb': rating_imdb,
+                'rating_kp': rating_kp,
+                'description': (best_match.get('description') or '')[:500],
+                'poster_url': poster_url
+            }]
+
         except Exception as e:
-            logger.warning(f"Ошибка поиска по названию '{title}': {e}")
+            logger.warning(f"Ошибка поиска по названию '{title}': {e}", exc_info=True)
             return []
+
+    def health_check(self) -> bool:
+        try:
+            test_movies = self.recommend_movies(genre_name='комедия', limit=1)
+            return test_movies is not None and (not isinstance(test_movies, dict) or 'error' not in test_movies)
+        except Exception:
+            return False
+
+    def clear_cache(self):
+        self._search_cache.clear()
+        self._last_search_failed = False
+        logger.info("[MovieAgent] Кэш очищен")

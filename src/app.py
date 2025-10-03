@@ -2,13 +2,16 @@
 import os
 import sys
 import logging
+import uuid
+from flask import Flask, render_template, request, jsonify, session
 
+# Настройка путей
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(__file__))
 
-from flask import Flask, render_template, request, jsonify, session
-from llm.dialog_agent import DialogMovieAgent
 from dotenv import load_dotenv
+from session_manager import SessionManager
+from dialogue_manager import DialogueManager
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
@@ -17,100 +20,124 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__, template_folder='templates', static_folder='static')
 app.secret_key = os.environ.get('FLASK_SECRET_KEY') or 'kinobot_dev_secret_key_2025'
 
+# Инициализация менеджеров
+session_manager = SessionManager()
+dialogue_manager = DialogueManager(session_manager)
+
+
+@app.before_request
+def make_session_permanent():
+    """Сделать сессию постоянной"""
+    session.permanent = True
+
+
+@app.before_request
+def ensure_user_id():
+    """Убедиться, что у пользователя есть ID"""
+    if 'user_id' not in session:
+        session['user_id'] = str(uuid.uuid4())
+        logger.info(f"Создан новый user_id: {session['user_id']}")
+
+
 @app.route('/')
 def index():
     return render_template('index.html')
 
-# ... (импорты без изменений) ...
 
 @app.route('/chat', methods=['POST'])
 def chat():
-    data = request.json
-    user_message = data.get('message', '').strip()
-    if not user_message:
-        return jsonify({"error": "Сообщение не может быть пустым"}), 400
-
+    """Основной endpoint для чата"""
     try:
-        dialog_agent = DialogMovieAgent()
-        result = dialog_agent.chat(user_message, data.get('history', []))
+        data = request.get_json()
+        if not data:
+            return jsonify({"error": "No JSON data provided"}), 400
 
-        if not result.get("needs_clarification"):
-            if result.get("movies_list"):
-                simplified = []
-                for m in result["movies_list"]:
-                    simplified.append({
-                        'id': m.get('id'),
-                        'title': m.get('title'),
-                        'year': m.get('year'),
-                        'genre': m.get('genre'),
-                        'country': m.get('country'),
-                        'rating_imdb': m.get('rating_imdb'),
-                        'rating_kp': m.get('rating_kp')
-                    })
-                session['last_movies'] = simplified
-            session['last_params'] = result.get("parameters", {})
-            actor = result["parameters"].get("actor")
-            if actor:
-                session['last_actor'] = actor
+        user_message = data.get('message', '').strip()
+        if not user_message:
+            return jsonify({"error": "Сообщение не может быть пустым"}), 400
 
+        user_id = session['user_id']
+        logger.info(f"Обработка сообщения от {user_id}: {user_message}")
+
+        # Обрабатываем сообщение
+        result = dialogue_manager.process_message(user_id, user_message)
+
+        # Подготавливаем ответ
+        response_data = {
+            "response": result.get("response", "Произошла ошибка"),
+            "needs_clarification": result.get("needs_clarification", False)
+        }
+
+        # Добавляем дополнительные данные если есть
+        if "movie" in result:
+            response_data["movie"] = result["movie"]
+        if "parameters" in result:
+            response_data["parameters"] = result["parameters"]
+
+        logger.info(f"Ответ для {user_id}: needs_clarification={response_data['needs_clarification']}")
+
+        return jsonify(response_data)
+
+    except Exception as e:
+        logger.error(f"Ошибка в /chat: {e}", exc_info=True)
         return jsonify({
-            "response": result["response"],
-            "needs_clarification": result.get("needs_clarification", False),
-            "parameters": result.get("parameters", {}),
-            "movie": result.get("movie", None)
-        })
+            "response": "Извините, произошла внутренняя ошибка. Попробуйте еще раз.",
+            "needs_clarification": True
+        }), 500
 
-    except Exception as e:
-        logger.error(f"[APP] Ошибка: {e}", exc_info=True)
-        return jsonify({"error": "Произошла ошибка"}), 500
-
-@app.route('/movie-details', methods=['POST'])
-def movie_details():
-    data = request.json
-    movie_id = data.get('movie_id')
-    title = data.get('title', 'Фильм')
-
-    try:
-        dialog_agent = DialogMovieAgent()
-        movie = None
-        # Поиск по ID (если числовой)
-        if movie_id and str(movie_id).isdigit():
-            movie = dialog_agent.movie_agent.get_movie_by_id(movie_id)
-        # Fallback: поиск по названию
-        if not movie:
-            found = dialog_agent.movie_agent.search_by_title(title)
-            movie = found[0] if found else None
-
-        if movie:
-            prompt_template = dialog_agent._load_prompt('response_generation_prompt.txt')
-            prompt = prompt_template.format(
-                title=movie.get('title', '—'),
-                year=movie.get('year', '—'),
-                genre=movie.get('genre', '—'),
-                rating=movie.get('rating', '—'),
-                description=movie.get('description', 'Описание отсутствует.')
-            )
-            messages = [{"role": "user", "content": prompt}]
-            response_text = dialog_agent.llm_router.call_llm(messages, max_tokens=300)
-            response_text = response_text.strip() if response_text else f"🎬 <strong>{movie['title']}</strong> ({movie['year']}) — ⭐ {movie['rating']}"
-        else:
-            response_text = f"Не нашёл подробностей о «{title}»."
-
-        return jsonify({"response": response_text})
-
-    except Exception as e:
-        logger.error(f"[MOVIE-DETAILS] Ошибка: {e}")
-        return jsonify({"response": f"Ошибка при загрузке «{title}»."}), 500
 
 @app.route('/new-chat', methods=['POST'])
 def new_chat():
-    session.clear()
-    return jsonify({"status": "ok"})
+    """Начать новый диалог (очистить историю)"""
+    try:
+        user_id = session['user_id']
+        dialogue_manager.clear_user_session(user_id)
+        logger.info(f"Новый чат для пользователя {user_id}")
+
+        return jsonify({
+            "status": "success",
+            "message": "История диалога очищена"
+        })
+    except Exception as e:
+        logger.error(f"Ошибка в /new-chat: {e}")
+        return jsonify({"status": "error"}), 500
+
 
 @app.route('/health')
 def health():
-    return jsonify({"status": "ok"}), 200
+    """Health check endpoint"""
+    try:
+        # Проверяем основные компоненты
+        healthy = dialogue_manager.movie_agent.health_check()
+
+        if healthy:
+            return jsonify({
+                "status": "healthy",
+                "sessions_count": len(session_manager.sessions)
+            }), 200
+        else:
+            return jsonify({"status": "unhealthy"}), 503
+
+    except Exception as e:
+        logger.error(f"Health check failed: {e}")
+        return jsonify({"status": "error"}), 500
+
+
+@app.route('/debug/session')
+def debug_session():
+    """Debug endpoint для просмотра сессии (только для разработки)"""
+    if not app.debug:
+        return jsonify({"error": "Not available in production"}), 403
+
+    user_id = session.get('user_id')
+    if not user_id:
+        return jsonify({"error": "No session"})
+
+    user_session = session_manager.get_session(user_id)
+    return jsonify(user_session.to_dict())
+
 
 if __name__ == '__main__':
-    logger.info("Запуск...")
+    logger.info("Запуск Flask приложения...")
+    logging.basicConfig(level=logging.DEBUG)
     app.run(debug=True, host='0.0.0.0', port=5000)

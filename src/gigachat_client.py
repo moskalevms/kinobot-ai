@@ -1,4 +1,6 @@
-# src/llm/gigachat_client.py
+# src/gigachat_client.py
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 import os
 import requests
 import uuid
