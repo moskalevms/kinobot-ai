@@ -1,0 +1,176 @@
+<!-- templates/index.html -->
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Kinobot AI — Подбор фильмов</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<div class="container">
+    <!-- Стартовый экран -->
+    <div id="start-screen">
+        <h1>🎬 Kinobot AI</h1>
+        <p class="subtitle">Ваш персональный ИИ-помощник по подбору фильмов</p>
+
+        <div class="form-group">
+            <label for="user-input">Опишите, что вы хотите посмотреть:</label>
+            <input type="text" id="user-input" placeholder="например: лёгкую комедию 2010-х с рейтингом выше 7">
+        </div>
+
+        <button id="start-btn">Найти фильм</button>
+    </div>
+
+    <!-- Чат-интерфейс (изначально скрыт) -->
+    <div id="chat-container" class="hidden">
+        <div id="messages" class="chat-messages"></div>
+        <div class="chat-input">
+            <input type="text" id="chat-input" placeholder="Например: «а похожие есть?» или «что-то более лёгкое»">
+            <button id="send-chat-btn">Отправить</button>
+        </div>
+        <button id="new-chat-btn" class="secondary">Новый поиск</button>
+    </div>
+
+    <!-- Статус-бар -->
+    <div class="status-bar" id="status-bar">Готов к работе</div>
+</div>
+
+<script>
+    const startScreen = document.getElementById('start-screen');
+    const chatContainer = document.getElementById('chat-container');
+    const messagesDiv = document.getElementById('messages');
+    const chatInput = document.getElementById('chat-input');
+    const sendChatBtn = document.getElementById('send-chat-btn');
+    const startBtn = document.getElementById('start-btn');
+    const initialInput = document.getElementById('user-input');
+    const newChatBtn = document.getElementById('new-chat-btn');
+    const statusDiv = document.getElementById('status-bar');
+
+    let conversationHistory = [];
+    let isLoading = false;
+
+    function addMessage(text, isUser = false) {
+        const msgDiv = document.createElement('div');
+        msgDiv.classList.add('message');
+        msgDiv.classList.add(isUser ? 'user-message' : 'bot-message');
+        msgDiv.innerHTML = text;
+        messagesDiv.appendChild(msgDiv);
+        messagesDiv.scrollTop = messagesDiv.scrollHeight;
+    }
+
+    function setLoading(loading) {
+        isLoading = loading;
+        sendChatBtn.disabled = loading;
+        startBtn.disabled = loading;
+        chatInput.disabled = loading;
+        statusDiv.textContent = loading ? 'Думаю... 🤖' : 'Готово!';
+    }
+
+    async function sendMessage(message) {
+        if (!message.trim() || isLoading) return;
+
+        addMessage(message, true);
+        chatInput.value = '';
+        setLoading(true);
+
+        conversationHistory.push({ role: 'user', content: message });
+
+        try {
+            const response = await fetch('/chat', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    message: message,
+                    history: conversationHistory
+                })
+            });
+
+            if (response.ok) {
+                const data = await response.json();
+                addMessage(data.response, false);
+                conversationHistory.push({ role: 'assistant', content: data.response });
+            } else {
+                const err = await response.json();
+                addMessage(`❌ Ошибка: ${err.error || 'Неизвестная ошибка'}`, false);
+            }
+        } catch (e) {
+            addMessage(`⚠️ Ошибка соединения: ${e.message}`, false);
+        } finally {
+            setLoading(false);
+        }
+    }
+
+    startBtn.addEventListener('click', () => {
+        const msg = initialInput.value.trim();
+        if (!msg) {
+            alert('Пожалуйста, опишите, что хотите посмотреть');
+            return;
+        }
+        startScreen.classList.add('hidden');
+        chatContainer.classList.remove('hidden');
+        sendMessage(msg);
+        chatInput.focus();
+    });
+
+    sendChatBtn.addEventListener('click', () => {
+        sendMessage(chatInput.value.trim());
+    });
+
+    chatInput.addEventListener('keypress', (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            sendMessage(chatInput.value.trim());
+        }
+    });
+
+    newChatBtn.addEventListener('click', async () => {
+        // Очищаем сессию на сервере
+        try {
+            await fetch('/new-chat', { method: 'POST' });
+        } catch (e) {
+            console.warn('Не удалось очистить сессию на сервере');
+        }
+
+        // Очищаем локальное состояние
+        conversationHistory = [];
+        messagesDiv.innerHTML = '';
+        chatContainer.classList.add('hidden');
+        startScreen.classList.remove('hidden');
+        initialInput.value = '';
+        statusDiv.textContent = 'Готов к работе';
+        initialInput.focus();
+    });
+
+    // Обработка кликов по фильмам
+messagesDiv.addEventListener('click', async (e) => {
+const movieItem = e.target.closest('.movie-item[data-movie-id]');
+if (!movieItem || isLoading) return;
+
+const movieId = movieItem.getAttribute('data-movie-id');
+const title = movieItem.getAttribute('data-movie-title');
+
+setLoading(true);
+try {
+    const response = await fetch('/movie-details', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ movie_id: movieId, title: title })
+    });
+    const data = await response.json();
+    addMessage(data.response, false);
+    conversationHistory.push({ role: 'assistant', content: data.response });
+} catch (e) {
+    addMessage('⚠️ Не удалось загрузить описание.', false);
+} finally {
+    setLoading(false);
+}
+});
+
+    // Фокус на первое поле при загрузке
+    window.addEventListener('load', () => {
+        initialInput.focus();
+    });
+</script>
+</body>
+</html>
