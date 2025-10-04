@@ -1,10 +1,11 @@
-# src/client/kinopoisk_client.py
 import logging
 import requests
-from typing import Optional
-from config import KINOPOISK_API_KEY, KINOPOISK_URL, MIN_VOTES_IMDB, MIN_VOTES_KP
+from typing import Optional, List, Dict, Any
+from config import KINOPOISK_API_KEY, KINOPOISK_URL
+from src.models.movie import Movie, MovieRating, MovieVotes, Genre, Country
 
 logger = logging.getLogger(__name__)
+
 
 class KinopoiskClient:
     def __init__(self):
@@ -35,15 +36,16 @@ class KinopoiskClient:
             return None
 
     def search_movies(
-        self,
-        genre: Optional[str] = None,
-        year: Optional[int] = None,
-        actor: Optional[str] = None,
-        imdb_rating_min: Optional[float] = None,
-        kp_rating_min: Optional[float] = None,
-        movie_type: str = 'movie',
-        query: Optional[str] = None,
-        limit: int = 50
+            self,
+            genre: Optional[str] = None,
+            year: Optional[int] = None,
+            actor: Optional[str] = None,
+            imdb_rating_min: Optional[float] = None,
+            kp_rating_min: Optional[float] = None,
+            movie_type: str = 'movie',
+            query: Optional[str] = None,
+            limit: int = 100,
+            country: Optional[str] = None
     ) -> Optional[dict]:
         params = {
             'limit': min(limit, 250),
@@ -69,10 +71,12 @@ class KinopoiskClient:
                 params['persons.id'] = person['id']
             else:
                 logger.warning(f"Актёр '{actor}' не найден.")
+        if country:
+            params['countries.name'] = country
         if imdb_rating_min is not None:
-            params['rating.imdb'] = str(imdb_rating_min)
+            params['rating.imdb'] = f"{imdb_rating_min}-10"
         if kp_rating_min is not None:
-            params['rating.kp'] = str(kp_rating_min)
+            params['rating.kp'] = f"{kp_rating_min}-10"
 
         logger.info(f"[KinopoiskClient] Запрос: {params}")
 
@@ -88,42 +92,8 @@ class KinopoiskClient:
                 logger.info("[KinopoiskClient] API вернул пустой результат")
                 return None
 
-            filtered_docs = []
-            for movie in raw_docs:
-                rating = movie.get('rating', {})
-                votes = movie.get('votes', {})
-
-                # Используем значения из config
-                imdb_val = rating.get('imdb')
-                imdb_votes = votes.get('imdb', 0)
-                kp_val = rating.get('kp')
-                kp_votes = votes.get('kp', 0)
-
-                imdb_ok = (imdb_rating_min is None) or (imdb_val is not None and imdb_val >= imdb_rating_min)
-                kp_ok = (kp_rating_min is None) or (kp_val is not None and kp_val >= kp_rating_min)
-
-                # Проверка по количеству голосов
-                has_enough_imdb = imdb_votes >= MIN_VOTES_IMDB
-                has_enough_kp = kp_votes >= MIN_VOTES_KP
-
-                # Фильм проходит, если:
-                # - IMDb рейтинг надёжный И удовлетворяет min_rating, ИЛИ
-                # - KP рейтинг надёжный И удовлетворяет min_rating
-                passes_imdb = imdb_ok and has_enough_imdb
-                passes_kp = kp_ok and has_enough_kp
-
-                if passes_imdb or passes_kp:
-                    filtered_docs.append(movie)
-
-            logger.info(f"[KinopoiskClient] После фильтрации по голосам осталось: {len(filtered_docs)} фильмов")
-
-            if not filtered_docs:
-                logger.info("[KinopoiskClient] Все фильмы отфильтрованы — ни один не прошёл порог голосов")
-                return None
-
-            result_docs = filtered_docs[:limit]
-            logger.info(f"[KinopoiskClient] Возвращаем {len(result_docs)} фильмов")
-            data['docs'] = result_docs
+            # ⚠️ Фильтрация теперь делается ВНЕ этого класса!
+            data['docs'] = raw_docs
             return data
 
         except Exception as e:
@@ -138,4 +108,32 @@ class KinopoiskClient:
             return response.json()
         except Exception as e:
             logger.error(f"Ошибка деталей фильма {movie_id}: {e}")
+            return None
+
+    def search_top250(self, genre: Optional[str] = None, year: Optional[int] = None,
+                      country: Optional[str] = None, limit: int = 100) -> Optional[dict]:
+        params = {
+            'lists': 'top250',
+            'limit': min(limit, 250),
+            'selectFields': [
+                'id', 'name', 'year', 'genres', 'rating', 'votes',
+                'description', 'poster', 'countries'
+            ],
+            'sortField': 'rating.imdb',
+            'sortType': -1
+        }
+
+        if genre:
+            params['genres.name'] = genre
+        if year:
+            params['year'] = year
+        if country:
+            params['countries.name'] = country
+
+        try:
+            response = self.session.get(self.base_url, params=params, timeout=10)
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            logger.error(f"Ошибка поиска в топ250: {e}")
             return None

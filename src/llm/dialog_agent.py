@@ -1,4 +1,3 @@
-# src/llm/dialog_agent.py
 import re
 import os
 import json
@@ -134,7 +133,6 @@ class DialogMovieAgent:
         intent = params.get("intent")
         target_movie_title = params.get("target_movie")
 
-
         # 1. Запрос информации о конкретном фильме
         if intent == "info" and target_movie_title:
             found = self.movie_agent.search_by_title(target_movie_title)
@@ -182,7 +180,7 @@ class DialogMovieAgent:
                     genre_name=primary_genre,
                     min_imdb_rating=min_rating,
                     country=country,
-                    limit=5,
+                    limit=100,
                     movie_type='movie'
                 )
                 if movies and not (isinstance(movies, dict) and "error" in movies):
@@ -202,7 +200,7 @@ class DialogMovieAgent:
         studio = params.get("studio")
         country = params.get("country")
         mood = params.get("mood")
-        count = params.get("count") or 1
+        count = params.get("count") or 10  # Теперь по умолчанию 10
         min_rating = params.get("min_rating")
 
         MOOD_TO_GENRE = {
@@ -219,6 +217,7 @@ class DialogMovieAgent:
 
         movie_type = 'tv-series' if self._is_tv_series_request(user_message) else 'movie'
 
+        # Используем обновленный movie_agent с улучшенной логикой
         movies = self.movie_agent.recommend_movies(
             genre_name=genre,
             year=year,
@@ -228,7 +227,8 @@ class DialogMovieAgent:
             country=country,
             min_imdb_rating=min_rating,
             limit=count,
-            movie_type=movie_type
+            movie_type=movie_type,
+            query=user_message  # Передаем оригинальный запрос для улучшенной логики
         )
 
         if not movies or (isinstance(movies, dict) and "error" in movies):
@@ -258,5 +258,5 @@ class DialogMovieAgent:
                 "response": response_text,
                 "needs_clarification": False,
                 "parameters": params,
-                "movies_list": movies[:10]
+                "movies_list": movies[:count]
             }
