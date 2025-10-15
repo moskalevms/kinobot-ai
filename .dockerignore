@@ -7,3 +7,4 @@ __pycache__
 venv/
 .DS_Store
 README.md
+code_collector.py

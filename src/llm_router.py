@@ -1,7 +1,7 @@
-# src/llm/llm_router.py
+# src/llm_router.py
 import os
 from typing import Optional, List, Dict
-from .gigachat_client import GigaChatClient
+from src.gigachat_client import GigaChatClient
 
 class LLMRouter:
     def __init__(self):
