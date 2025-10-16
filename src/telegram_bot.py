@@ -1,8 +1,6 @@
 # src/telegram_bot.py
 import os
-import sys
 import logging
-from datetime import datetime
 from telegram import (
     Update,
     ReplyKeyboardMarkup,
@@ -19,8 +17,9 @@ from telegram.ext import (
     CallbackQueryHandler
 )
 from dotenv import load_dotenv
-from src.session_manager import SessionManager
-from src.dialogue_manager import DialogueManager
+from session_manager import SessionManager
+from dialogue_manager import DialogueManager
+import aiohttp
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
@@ -29,15 +28,13 @@ logger = logging.getLogger(__name__)
 # Инициализация менеджеров
 session_manager = SessionManager()
 dialogue_manager = DialogueManager(session_manager)
-
-# Фиксированный год (по вашему указанию — 2025)
 CURRENT_YEAR = 2025
 
 def get_main_menu():
     """Клавиатура основного меню"""
     keyboard = [
         [KeyboardButton("🎭 Фильм по настроению"), KeyboardButton("🏆 Топ фильмов")],
-        [KeyboardButton("🎬 Поиск по жанру")],  # ← Удалена кнопка "Фильмы/Сериалы"
+        [KeyboardButton("🎬 Поиск по жанру")],
         [KeyboardButton("🔄 Другие варианты"), KeyboardButton("💡 Помощь")],
         [KeyboardButton("🆕 Новый диалог")]
     ]
@@ -91,86 +88,17 @@ async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(help_text, parse_mode='HTML')
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_message = update.message.text.strip()
-    user_id = str(update.effective_user.id)
-
-    if not user_message:
-        await update.message.reply_text("Пожалуйста, введите запрос.")
-        return
-
-    logger.info(f"Сообщение от {user_id}: {user_message}")
-
-    # 🔹 Обработка кнопок меню
-    if user_message == "🎭 Фильм по настроению":
-        await update.message.reply_text(
-            "🎭 Какое у вас сейчас настроение?\n"
-            "Например: *грустное*, *весёлое*, *устал*, *скучно*, *хочу адреналина*, *страшно*, *романтическое*.",
-            parse_mode='Markdown'
-        )
-        return
-
-    elif user_message == "🏆 Топ фильмов":
-        await update.message.reply_text("Выберите категорию топа:", reply_markup=get_top_menu())
-        return
-
-    elif user_message == "⬅️ Назад":
-        await update.message.reply_text("Вернулись в главное меню", reply_markup=get_main_menu())
-        return
-
-    elif user_message == "🎬 Поиск по жанру":
-        await update.message.reply_text(
-            "Какой жанр вас интересует?\n"
-            "Например: комедия, драма, боевик, триллер, ужасы, фантастика, мелодрама, приключения..."
-        )
-        return
-
-    elif user_message == "🔄 Другие варианты":
-        user_query = "посоветуй другие фильмы"
-
-    elif user_message == "💡 Помощь":
-        await handle_help(update, context)
-        return
-
-    elif user_message == "🆕 Новый диалог":
-        dialogue_manager.clear_user_session(user_id)
-        # Сброс контекста (включая movie_type, если бы он там был)
-        context.user_data.clear()
-        await update.message.reply_text(
-            "🆕 Начинаем новый диалог! История очищена.\nЧто хотите посмотреть?",
-            reply_markup=get_main_menu()
-        )
-        return
-
-    # === Обработка новых кнопок топов ===
-    elif user_message == "🏆 Топ 50 фильмов":
-        user_query = "топ 50 фильмов"
-    elif user_message == f"🏆 Топ фильмов {CURRENT_YEAR}":
-        user_query = f"топ фильмов {CURRENT_YEAR}"
-    elif user_message == "📺 Топ 50 сериалов":
-        user_query = "топ 50 сериалов"
-    elif user_message == f"📺 Топ сериалов {CURRENT_YEAR}":
-        user_query = f"топ сериалов {CURRENT_YEAR}"
-
-    else:
-        # Обычный текстовый запрос
-        user_query = user_message
-
-    # 🔸 ВАЖНО: НЕ добавляем суффикс "сериалы" на основе старого контекста!
-    # Тип контента определяется LLM внутри dialogue_manager.process_message()
-    await _process_and_reply(update, context, user_id, user_query)
-
 async def _process_and_reply(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: str, query: str):
     try:
         await update.message.chat.send_action(action="typing")
-        result = dialogue_manager.process_message(user_id, query)
+        async with aiohttp.ClientSession() as http_session:
+            result = await dialogue_manager.process_message(http_session, user_id, query)
         reply_markup = result.get("reply_markup")
         await update.message.reply_text(
             result["response"],
             parse_mode='HTML',
             reply_markup=reply_markup
         )
-        # Отправка постера, если есть
         if "movie" in result and result["movie"].get("poster_url"):
             poster_url = result["movie"]["poster_url"]
             if poster_url and poster_url.startswith("http"):
@@ -185,6 +113,62 @@ async def _process_and_reply(update: Update, context: ContextTypes.DEFAULT_TYPE,
             reply_markup=get_main_menu()
         )
 
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_message = update.message.text.strip()
+    user_id = str(update.effective_user.id)
+    if not user_message:
+        await update.message.reply_text("Пожалуйста, введите запрос.")
+        return
+
+    logger.info(f"Сообщение от {user_id}: {user_message}")
+
+    # Обработка кнопок меню
+    if user_message == "🎭 Фильм по настроению":
+        await update.message.reply_text(
+            "🎭 Какое у вас сейчас настроение?\n"
+            "Например: *грустное*, *весёлое*, *устал*, *скучно*, *хочу адреналина*, *страшно*, *романтическое*.",
+            parse_mode='Markdown'
+        )
+        return
+    elif user_message == "🏆 Топ фильмов":
+        await update.message.reply_text("Выберите категорию топа:", reply_markup=get_top_menu())
+        return
+    elif user_message == "⬅️ Назад":
+        await update.message.reply_text("Вернулись в главное меню", reply_markup=get_main_menu())
+        return
+    elif user_message == "🎬 Поиск по жанру":
+        await update.message.reply_text(
+            "Какой жанр вас интересует?\n"
+            "Например: комедия, драма, боевик, триллер, ужасы, фантастика, мелодрама, приключения..."
+        )
+        return
+    elif user_message == "🔄 Другие варианты":
+        user_query = "посоветуй другие фильмы"
+    elif user_message == "💡 Помощь":
+        await handle_help(update, context)
+        return
+    elif user_message == "🆕 Новый диалог":
+        dialogue_manager.clear_user_session(user_id)
+        context.user_data.clear()
+        await update.message.reply_text(
+            "🆕 Начинаем новый диалог! История очищена.\nЧто хотите посмотреть?",
+            reply_markup=get_main_menu()
+        )
+        return
+    # Топы
+    elif user_message == "🏆 Топ 50 фильмов":
+        user_query = "топ 50 фильмов"
+    elif user_message == f"🏆 Топ фильмов {CURRENT_YEAR}":
+        user_query = f"топ фильмов {CURRENT_YEAR}"
+    elif user_message == "📺 Топ 50 сериалов":
+        user_query = "топ 50 сериалов"
+    elif user_message == f"📺 Топ сериалов {CURRENT_YEAR}":
+        user_query = f"топ сериалов {CURRENT_YEAR}"
+    else:
+        user_query = user_message
+
+    await _process_and_reply(update, context, user_id, user_query)
+
 async def handle_movie_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text(
@@ -195,13 +179,7 @@ async def handle_movie_command(update: Update, context: ContextTypes.DEFAULT_TYP
         return
     movie_title = " ".join(context.args)
     user_id = str(update.effective_user.id)
-    try:
-        await update.message.chat.send_action(action="typing")
-        result = dialogue_manager.process_message(user_id, f"расскажи о фильме {movie_title}")
-        await update.message.reply_text(result["response"], parse_mode='HTML')
-    except Exception as e:
-        logger.error(f"Ошибка команды /movie: {e}")
-        await update.message.reply_text("Ошибка при поиске фильма.")
+    await _process_and_reply(update, context, user_id, f"расскажи о фильме {movie_title}")
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.error(f"Ошибка: {context.error}", exc_info=True)
@@ -214,41 +192,42 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_movie_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    data = query.data  # формат: "info:12345"
+    data = query.data
     if data.startswith("info:"):
         try:
             movie_id = int(data.split(":", 1)[1])
-            kinopoisk_client = dialogue_manager.movie_agent.kinopoisk_client
-            url = f"{kinopoisk_client.base_url}/{movie_id}"
-            resp = kinopoisk_client.session.get(url)
-            if resp.status_code == 200:
-                raw = resp.json()
-                genres = ', '.join([g['name'] for g in raw.get('genres', []) if g.get('name')])
-                countries = ', '.join([c['name'] for c in raw.get('countries', []) if c.get('name')])
-                rating_imdb = raw.get('rating', {}).get('imdb')
-                rating_kp = raw.get('rating', {}).get('kp')
-                poster_url = raw.get('poster', {}).get('url', '').strip()
-                movie = {
-                    'id': raw.get('id'),
-                    'title': raw.get('name') or '—',
-                    'year': raw.get('year'),
-                    'genre': genres,
-                    'country': countries,
-                    'rating': rating_imdb or rating_kp or '—',
-                    'rating_imdb': rating_imdb,
-                    'rating_kp': rating_kp,
-                    'description': (raw.get('description') or '')[:500],
-                    'poster_url': poster_url
-                }
-                desc = f"🎬 <strong>{movie['title']}</strong> ({movie['year']}) — {movie['genre']} с рейтингом {movie['rating']}.\n{movie['description']}"
-                await query.message.reply_text(desc, parse_mode='HTML')
-                if poster_url:
-                    try:
-                        await query.message.reply_photo(photo=poster_url)
-                    except Exception as e:
-                        logger.warning(f"Не удалось отправить постер: {e}")
-            else:
-                await query.message.reply_text("Не удалось загрузить информацию о фильме.")
+            async with aiohttp.ClientSession() as http_session:
+                kinopoisk_client = dialogue_manager.movie_agent.kinopoisk_client
+                url = f"{kinopoisk_client.base_url}/{movie_id}"
+                async with http_session.get(url, headers=kinopoisk_client.headers) as resp:
+                    if resp.status == 200:
+                        raw = await resp.json()
+                        genres = ', '.join([g['name'] for g in raw.get('genres', []) if g.get('name')])
+                        countries = ', '.join([c['name'] for c in raw.get('countries', []) if c.get('name')])
+                        rating_imdb = raw.get('rating', {}).get('imdb')
+                        rating_kp = raw.get('rating', {}).get('kp')
+                        poster_url = raw.get('poster', {}).get('url', '').strip()
+                        movie = {
+                            'id': raw.get('id'),
+                            'title': raw.get('name') or '—',
+                            'year': raw.get('year'),
+                            'genre': genres,
+                            'country': countries,
+                            'rating': rating_imdb or rating_kp or '—',
+                            'rating_imdb': rating_imdb,
+                            'rating_kp': rating_kp,
+                            'description': (raw.get('description') or '')[:500],
+                            'poster_url': poster_url
+                        }
+                        desc = f"🎬 <strong>{movie['title']}</strong> ({movie['year']}) — {movie['genre']} с рейтингом {movie['rating']}.\n{movie['description']}"
+                        await query.message.reply_text(desc, parse_mode='HTML')
+                        if poster_url:
+                            try:
+                                await query.message.reply_photo(photo=poster_url)
+                            except Exception as e:
+                                logger.warning(f"Не удалось отправить постер: {e}")
+                    else:
+                        await query.message.reply_text("Не удалось загрузить информацию о фильме.")
         except (ValueError, IndexError, KeyError) as e:
             logger.warning(f"Ошибка обработки callback_data: {e}")
             await query.message.reply_text("Не удалось определить фильм.")
@@ -270,5 +249,5 @@ def main():
     application.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    logging.basicConfig(level=logging.DEBUG)
     main()

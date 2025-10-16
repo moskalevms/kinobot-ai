@@ -3,10 +3,10 @@ import os
 from typing import Optional, List, Dict
 from src.gigachat_client import GigaChatClient
 
+
 class LLMRouter:
     def __init__(self):
         self.models = []
-
         gigachat_auth_key = os.getenv("GIGACHAT_AUTH_KEY")
         if gigachat_auth_key:
             try:
@@ -15,47 +15,47 @@ class LLMRouter:
                     "client": GigaChatClient(),
                     "type": "gigachat"
                 })
-                print("[LLM] ✅ GigaChat добавлен (используется GIGACHAT_AUTH_KEY для получения токена)")
+                print("[LLM] ✅ GigaChat добавлен")
             except Exception as e:
                 print(f"[LLM] ❌ Ошибка при инициализации GigaChat: {e}")
         else:
             print("[LLM] ⚠️ GIGACHAT_AUTH_KEY не указан — GigaChat отключен")
 
-        # 🔽 Временно отключаем DeepSeek через флаг (на будущее)
         enable_deepseek = os.getenv("ENABLE_DEEPSEEK", "false").lower() == "true"
         if enable_deepseek:
             deepseek_key = os.getenv("DEEPSEEK_API_KEY")
-            deepseek_base = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1").strip()  # ← исправлено
+            deepseek_base = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1").strip()
             if deepseek_key:
                 try:
-                    from openai import OpenAI
+                    from openai import AsyncOpenAI
                     self.models.append({
                         "name": "deepseek",
-                        "client": OpenAI(api_key=deepseek_key, base_url=deepseek_base),
+                        "client": AsyncOpenAI(api_key=deepseek_key, base_url=deepseek_base),
                         "type": "openai"
                     })
                     print("[LLM] ✅ DeepSeek добавлен")
                 except ImportError:
                     print("[LLM] ❌ Модуль openai не установлен — DeepSeek недоступен")
             else:
-                print("[LLM] ⚠️ DEEPSEEK_API_KEY не указан — DeepSeek не будет использоваться даже при ENABLE_DEEPSEEK=true")
+                print("[LLM] ⚠️ DEEPSEEK_API_KEY не указан")
 
         if not self.models:
-            raise ValueError("Не указаны ключи API для GigaChat (GIGACHAT_API_KEY) или DeepSeek (если включён)")
+            raise ValueError("Не указаны ключи API для LLM")
 
-    def call_llm(self, messages: List[Dict[str, str]], max_tokens: int = 500) -> Optional[str]:
+    async def call_llm(self, session, messages: List[Dict[str, str]], max_tokens: int = 500) -> Optional[str]:
         for model in self.models:
             try:
                 print(f"[LLM] Пробуем {model['name']}...")
                 if model["type"] == "gigachat":
-                    result = model["client"].chat_completions_create(
+                    result = await model["client"].chat_completions_create(
+                        session=session,
                         model="GigaChat",
                         messages=messages,
                         max_tokens=max_tokens,
                         temperature=0.3
                     )
-                else:  # openai-совместимый (DeepSeek, если включён)
-                    response = model["client"].chat.completions.create(
+                else:  # openai-совместимый
+                    response = await model["client"].chat.completions.create(
                         model="deepseek-chat",
                         messages=messages,
                         max_tokens=max_tokens,
@@ -63,12 +63,10 @@ class LLMRouter:
                         timeout=30
                     )
                     result = response.choices[0].message.content.strip()
-
                 print(f"[LLM] ✅ Успешный ответ от {model['name']}")
                 return result
             except Exception as e:
                 print(f"[LLM] ❌ {model['name']} недоступен: {e}")
                 continue
-
         print("[LLM] ❌ Все LLM недоступны")
         return None

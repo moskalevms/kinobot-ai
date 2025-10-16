@@ -30,21 +30,18 @@ class IntentClassifier:
             logger.error(f"Ошибка загрузки промпта {filename}: {e}")
             return ""
 
-    # Добавляем в метод classify_with_llm обработку десятилетий
-    def classify_with_llm(self, message: str, context: Dict[str, Any]) -> Dict[str, Any]:
-        """Классификация с улучшенной обработкой десятилетий"""
+    async def classify_with_llm(self, session, message: str, context: Dict[str, Any]) -> Dict[str, Any]:
         try:
             system_prompt = self._load_prompt('parameter_extraction_prompt.txt')
             if not system_prompt:
                 logger.warning("Не удалось загрузить системный промпт, используем упрощенную классификацию")
                 return self._classify_fallback(message)
-
             messages = [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": message}
             ]
 
-            response = self.llm_router.call_llm(messages, max_tokens=250)
+            response = await self.llm_router.call_llm(session, messages, max_tokens=250)
             if not response:
                 logger.warning("LLM не вернул ответ, используем упрощенную классификацию")
                 return self._classify_fallback(message)
