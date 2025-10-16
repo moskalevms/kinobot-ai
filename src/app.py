@@ -5,19 +5,23 @@ import logging
 import uuid
 import asyncio
 from flask import Flask, render_template, request, jsonify, session
-from flask_executor import Executor  # для запуска async в Flask
+from flask_executor import Executor
 import aiohttp
+from telegram import Update
+from telegram.ext import Application
 
 # Настройка путей
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(__file__))
+
 from dotenv import load_dotenv
 from session_manager import SessionManager
 from dialogue_manager import DialogueManager
+from telegram_bot import create_telegram_app, setup_webhook
 
 load_dotenv()
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+from log_setup import setup_logging
+logger = setup_logging("web")
 
 app = Flask(__name__, template_folder='templates', static_folder='static')
 app.secret_key = os.environ.get('FLASK_SECRET_KEY') or 'kinobot_dev_secret_key_2025'
@@ -28,6 +32,20 @@ dialogue_manager = DialogueManager(session_manager)
 
 # Executor для запуска async-функций в Flask
 executor = Executor(app)
+
+# Глобальное приложение Telegram (для webhook)
+telegram_app: Application = None
+
+BOT_MODE = os.getenv("BOT_MODE", "polling")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+
+if BOT_MODE == "webhook":
+    if not WEBHOOK_URL:
+        raise ValueError("WEBHOOK_URL обязателен в режиме webhook")
+    telegram_app = create_telegram_app()
+    setup_webhook(telegram_app, WEBHOOK_URL)
+elif BOT_MODE != "polling":
+    raise ValueError(f"Неизвестный BOT_MODE: {BOT_MODE}")
 
 @app.before_request
 def make_session_permanent():
@@ -44,14 +62,12 @@ def index():
     return render_template('index.html')
 
 async def _process_chat_async(user_id: str, user_message: str) -> dict:
-    """Асинхронная обработка сообщения с aiohttp.ClientSession"""
     async with aiohttp.ClientSession() as http_session:
         result = await dialogue_manager.process_message(http_session, user_id, user_message)
         return result
 
 @app.route('/chat', methods=['POST'])
 def chat():
-    """Основной endpoint для чата (запускает async через executor)"""
     try:
         data = request.get_json()
         if not data:
@@ -61,11 +77,8 @@ def chat():
             return jsonify({"error": "Сообщение не может быть пустым"}), 400
         user_id = session['user_id']
         logger.info(f"Обработка сообщения от {user_id}: {user_message}")
-
-        # Запускаем асинхронную функцию в фоне
         future = executor.submit(asyncio.run, _process_chat_async(user_id, user_message))
         result = future.result()
-
         response_data = {
             "response": result.get("response", "Произошла ошибка"),
             "needs_clarification": result.get("needs_clarification", False)
@@ -74,7 +87,6 @@ def chat():
             response_data["movie"] = result["movie"]
         if "parameters" in result:
             response_data["parameters"] = result["parameters"]
-
         logger.info(f"Ответ для {user_id}: needs_clarification={response_data['needs_clarification']}")
         return jsonify(response_data)
     except Exception as e:
@@ -127,6 +139,16 @@ def debug_session():
         return jsonify({"error": "No session"})
     user_session = session_manager.get_session(user_id)
     return jsonify(user_session.to_dict())
+
+# Webhook endpoint для Telegram
+@app.route('/telegram-webhook', methods=['POST'])
+def telegram_webhook():
+    global telegram_app
+    if telegram_app is None:
+        return jsonify({"error": "Telegram app not initialized"}), 500
+    update = Update.de_json(request.get_json(force=True), telegram_app.bot)
+    telegram_app.update_queue.put_nowait(update)
+    return jsonify({"status": "ok"})
 
 if __name__ == '__main__':
     logger.info("Запуск Flask приложения...")

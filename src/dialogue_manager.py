@@ -1,15 +1,16 @@
 # src/dialogue_manager.py
 import os
 import logging
-import re
+
 from typing import Dict, Any, List, Optional, Tuple
-from src.movie_agent import MovieAgent
-from src.session_manager import SessionManager, UserSession
-from src.intent_classifier import IntentClassifier
-from src.llm_router import LLMRouter
+from .movie_agent import MovieAgent
+from .session_manager import SessionManager, UserSession
+from .intent_classifier import IntentClassifier
+from .llm_router import LLMRouter
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 logger = logging.getLogger(__name__)
+
 
 class DialogueManager:
     def __init__(self, session_manager: SessionManager):
@@ -72,7 +73,8 @@ class DialogueManager:
                 "needs_clarification": True
             }
 
-    async def _handle_info_request(self, http_session, message: str, params: Dict, session: UserSession) -> Dict[str, Any]:
+    async def _handle_info_request(self, http_session, message: str, params: Dict, session: UserSession) -> Dict[
+        str, Any]:
         target_movie = params.get("target_movie")
         if not target_movie:
             return {
@@ -95,80 +97,102 @@ class DialogueManager:
             "needs_clarification": False
         }
 
-    async def _handle_similar_request(self, http_session, message: str, params: Dict, session: UserSession) -> Dict[str, Any]:
+    async def _handle_similar_request(self, http_session, message: str, params: Dict, session: UserSession) -> Dict[
+        str, Any]:
         if not session.last_movies:
             return {
                 "response": "У меня нет информации о предыдущих рекомендациях. Сначала найдите фильм, а потом попросите похожие.",
                 "needs_clarification": True
             }
-
         self.movie_agent.clear_cache()
         last_movies = session.last_movies
 
-        # 🔑 Определяем movie_type из последнего показанного элемента
+        # Определяем movie_type
         if last_movies and isinstance(last_movies[0], dict):
             detected_type = last_movies[0].get('type') or last_movies[0].get('movie_type')
             movie_type = 'tv-series' if detected_type == 'tv-series' else 'movie'
         else:
             movie_type = session.last_params.get('movie_type', 'movie')
 
+        # 🔑 1. Извлекаем страну и год/диапазон из НОВОГО запроса (params), иначе — из сессии
+        country = params.get('country') or session.last_params.get('country')
+        explicit_year = params.get('year')
+        explicit_year_range = params.get('year_range')
+
+        # 🔑 2. Жанр берём из последнего фильма (или доминирующий), если не указан явно
+        genre = None
         if len(last_movies) == 1:
             base = last_movies[0]
             genre = base.get('genre', '').split(',')[0].strip() if base.get('genre') else None
-            year = base.get('year')
-            rating = base.get('rating_imdb') or base.get('rating_kp') or 6.5
-            min_rating = max(6.0, rating - 0.5)
-            year_range = (year - 3, year + 3) if year else None
-            movies = await self.movie_agent.recommend_movies(
-                http_session,
-                genre_name=genre,
-                year_range=year_range,
-                min_imdb_rating=min_rating,
-                limit=20,
-                movie_type=movie_type
-            )
         else:
-            genres, ratings, years = [], [], []
+            genres = []
             for m in last_movies:
                 if m.get('genre'):
                     genres.extend([g.strip() for g in m['genre'].split(',') if g.strip()])
-                r = m.get('rating_imdb') or m.get('rating_kp')
-                if r: ratings.append(r)
-                y = m.get('year')
-                if y: years.append(y)
+            if genres:
+                from collections import Counter
+                genre = Counter(genres).most_common(1)[0][0]
 
-            from collections import Counter
-            dominant_genre = Counter(genres).most_common(1)[0][0] if genres else None
-            min_rating = sorted(ratings)[len(ratings) // 2] if ratings else 6.5
-            year_range = (min(years) - 2, max(years) + 2) if years else None
-            movies = await self.movie_agent.recommend_movies(
-                http_session,
-                genre_name=dominant_genre,
-                year_range=year_range,
-                min_imdb_rating=min_rating,
-                limit=25,
-                movie_type=movie_type
-            )
+        # 🔑 3. Определяем диапазон лет
+        year_range = None
+        min_rating = 6.5
+
+        if explicit_year_range:
+            # Явный диапазон: "2000-2010"
+            year_range = explicit_year_range
+        elif explicit_year is not None:
+            # Десятилетие: "2000" → (2000, 2009)
+            if explicit_year % 10 == 0 and 1900 <= explicit_year <= 2020:
+                year_range = (explicit_year, min(explicit_year + 9, 2025))
+            else:
+                # Конкретный год: "2005" → (2002, 2008)
+                year_range = (max(1900, explicit_year - 3), min(2025, explicit_year + 3))
+        else:
+            # Нет явного года — берём из последнего фильма
+            if len(last_movies) == 1:
+                year = last_movies[0].get('year')
+                rating = last_movies[0].get('rating_imdb') or last_movies[0].get('rating_kp') or 6.5
+                min_rating = max(6.0, rating - 0.5)
+                if year:
+                    year_range = (max(1900, year - 3), min(2025, year + 3))
+            else:
+                years = [m.get('year') for m in last_movies if m.get('year')]
+                if years:
+                    year_range = (max(1900, min(years) - 2), min(2025, max(years) + 2))
+                ratings = [m.get('rating_imdb') or m.get('rating_kp') for m in last_movies]
+                ratings = [r for r in ratings if r is not None]
+                if ratings:
+                    min_rating = max(6.0, sorted(ratings)[len(ratings) // 2] - 0.5)
+
+        # 🔑 4. Выполняем поиск с учётом всех параметров
+        movies = await self.movie_agent.recommend_movies(
+            http_session,
+            genre_name=genre,
+            year_range=year_range,
+            min_imdb_rating=min_rating,
+            limit=25,
+            movie_type=movie_type,
+            country=country  # ← страна тоже из нового запроса или сессии
+        )
 
         seen_ids = {m.get('id') for m in last_movies if m.get('id')}
         new_movies = [m for m in movies if m.get('id') not in seen_ids]
         final_movies = (new_movies[:13] or movies[:13])
 
-        # ✅ Нейтральный заголовок — без упоминания типа контента
         response_text, reply_markup = self._generate_list_response(
             final_movies,
             "Вот что ещё может вам понравиться:"
         )
-
         return {
             "response": response_text,
             "reply_markup": reply_markup,
             "movies_list": final_movies,
-            "parameters": {"movie_type": movie_type},
+            "parameters": {"movie_type": movie_type, "country": country},
             "needs_clarification": False
         }
 
-    async def _handle_refine_request(self, http_session, message: str, params: Dict, session: UserSession) -> Dict[str, Any]:
+    async def _handle_refine_request(self, http_session, message: str, params: Dict, session: UserSession) -> Dict[
+        str, Any]:
         if not session.last_params:
             return {
                 "response": "Сначала задайте критерии поиска, например: «комедии 2020-х»",
@@ -178,7 +202,8 @@ class DialogueManager:
         last_params = session.last_params.copy()
         last_movie_ids = {m['id'] for m in session.last_movies if m.get('id')}
         movie_type = last_params.get('movie_type', 'movie')
-        mood_genres = last_params.get('mood_genres') or [last_params.get('genre')] if last_params.get('genre') else ['комедия']
+        mood_genres = last_params.get('mood_genres') or [last_params.get('genre')] if last_params.get('genre') else [
+            'комедия']
 
         all_new_movies = []
         seen_ids = set(last_movie_ids)
@@ -237,21 +262,30 @@ class DialogueManager:
             "needs_clarification": False
         }
 
-    async def _handle_general_request(self, http_session, message: str, params: Dict, session: UserSession) -> Dict[str, Any]:
+    async def _handle_general_request(self, http_session, message: str, params: Dict, session: UserSession) -> Dict[
+        str, Any]:
         reply_markup = None
         message_lower = message.lower()
         logger.info(f"Обработка общего запроса: '{message}', params: {params}")
         # === Распознавание настроения ===
         mood_genres = []
         mood_triggers = {
-            'грустн': ['грустн', 'плохое настроение', 'поднять настроение', 'грущу', 'грусть', 'хочу радости', 'подавлен', 'депресс', 'тоска', 'печал', 'уныл'],
-            'весел': ['весел', 'смех', 'смешн', 'посмеяться', 'радост', 'хорошее настроение', 'радость', 'настроение отличное', 'счастлив', 'улыбк', 'забавн', 'юмор'],
-            'устал': ['устал', 'выгор', 'энергии нет', 'отдохнуть', 'расслабиться', 'спокойн', 'тихий вечер', 'ничего напряжённого', 'без экшена', 'лёгкий фильм'],
-            'скучно': ['скучно', 'нечего смотреть', 'занять себя', 'развлечься', 'что-то интересное', 'надоело всё', 'ищу что-то новое'],
-            'страшн': ['страшн', 'испуг', 'боюсь', 'ужас', 'мистик', 'триллер', 'пуга', 'жутк', 'напряг', 'напряжённый', 'напрячь нервы', 'щекотка для нервов'],
-            'романт': ['романт', 'влюблен', 'любовь', 'пара', 'вдвоем', 'нежн', 'сердечко', 'романтический вечер', 'чувств', 'влюблённость'],
-            'адреналин': ['адреналин', 'экшн', 'боевик', 'напряжение', 'динамик', 'крутой', 'взрывы', 'гонки', 'погони', 'герои', 'спасение мира'],
-            'умный': ['умный', 'глубок', 'философ', 'мысл', 'интеллектуальн', 'осмысл', 'не для всех', 'сложный', 'мозг', 'рефлексия', 'медитативн']
+            'грустн': ['грустн', 'плохое настроение', 'поднять настроение', 'грущу', 'грусть', 'хочу радости',
+                       'подавлен', 'депресс', 'тоска', 'печал', 'уныл'],
+            'весел': ['весел', 'смех', 'смешн', 'посмеяться', 'радост', 'хорошее настроение', 'радость',
+                      'настроение отличное', 'счастлив', 'улыбк', 'забавн', 'юмор'],
+            'устал': ['устал', 'выгор', 'энергии нет', 'отдохнуть', 'расслабиться', 'спокойн', 'тихий вечер',
+                      'ничего напряжённого', 'без экшена', 'лёгкий фильм'],
+            'скучно': ['скучно', 'нечего смотреть', 'занять себя', 'развлечься', 'что-то интересное', 'надоело всё',
+                       'ищу что-то новое'],
+            'страшн': ['страшн', 'испуг', 'боюсь', 'ужас', 'мистик', 'триллер', 'пуга', 'жутк', 'напряг', 'напряжённый',
+                       'напрячь нервы', 'щекотка для нервов'],
+            'романт': ['романт', 'влюблен', 'любовь', 'пара', 'вдвоем', 'нежн', 'сердечко', 'романтический вечер',
+                       'чувств', 'влюблённость'],
+            'адреналин': ['адреналин', 'экшн', 'боевик', 'напряжение', 'динамик', 'крутой', 'взрывы', 'гонки', 'погони',
+                          'герои', 'спасение мира'],
+            'умный': ['умный', 'глубок', 'философ', 'мысл', 'интеллектуальн', 'осмысл', 'не для всех', 'сложный',
+                      'мозг', 'рефлексия', 'медитативн']
         }
         for mood_key, phrases in mood_triggers.items():
             if any(phrase in message_lower for phrase in phrases):
@@ -268,22 +302,16 @@ class DialogueManager:
             use_query = message
 
         year = params.get('year')
-        year_range = None
-        is_decade = False
+        year_range = params.get('year_range')
+        is_decade = (year is not None and year % 10 == 0 and 1900 <= year <= 2020)
         current_year = 2025
-        decade_match = re.search(r'(\d{3})0-х', message_lower)
-        if decade_match:
-            decade = int(decade_match.group(1) + "0")
-            year_range = (decade, min(decade + 9, current_year))
-            is_decade = True
-        elif year and 1900 <= year <= 2020 and year % 10 == 0:
-            is_decade = True
+        if is_decade and year_range is None:
             year_range = (year, min(year + 9, current_year))
 
         min_rating = params.get('min_rating') or (6.5 if is_decade else 6.0)
         limit = params.get('count') or 13  # ← Изменено: убрана привязка к is_decade
         movie_type = params.get('movie_type', 'movie')
-        content_type = "сериалов" if movie_type == 'tv-series' else "фильмов"
+        content_type = "сериалы" if movie_type == 'tv-series' else "фильмы"
         # === Множественный поиск по жанрам ===
         all_movies = []
         seen_ids = set()
@@ -337,7 +365,7 @@ class DialogueManager:
         logger.info(f"Найдено {movie_type}: {len(movies)}")
 
         if not movies:
-            content_type = "сериалов" if movie_type == 'tv-series' else "фильмов"
+            content_type = "сериалы" if movie_type == 'tv-series' else "фильмы"
             error_parts = []
             if params.get('country'):
                 error_parts.append(f"стране '{params['country']}'")
@@ -430,12 +458,16 @@ class DialogueManager:
         if genre:
             parts.append(f"в жанре {genre}")
         if year_range:
-            parts.append(f"{year_range[0]}-{year_range[1]} годов")
+            if year_range[0] // 10 == year_range[1] // 10 and year_range[1] - year_range[0] == 9:
+                decade = year_range[0]
+                parts.append(f"{decade}-х годов")
+            else:
+                parts.append(f"{year_range[0]}–{year_range[1]} годов")
         elif year:
             if year % 10 == 0:
                 parts.append(f"{year}-х годов")
             else:
-                parts.append(f"{year} году")
+                parts.append(f"в {year} году")  # ← добавлено "в"
         header = f"Топ {content_type}"
         if parts:
             header += " " + " ".join(parts)
@@ -449,18 +481,23 @@ class DialogueManager:
         if genre:
             parts.append(f"в жанре {genre}")
         if year_range:
-            parts.append(f"{year_range[0]}-{year_range[1]} годов")
+            if year_range[0] // 10 == year_range[1] // 10 and year_range[1] - year_range[0] == 9:
+                decade = year_range[0]
+                parts.append(f"{decade}-х годов")
+            else:
+                parts.append(f"{year_range[0]}–{year_range[1]} годов")
         elif year:
             if year % 10 == 0:
                 parts.append(f"{year}-х годов")
             else:
-                parts.append(f"{year} году")
+                parts.append(f"в {year} году")  # ← "в"
         header = f"Рекомендации {content_type}"
         if parts:
             header += " " + " ".join(parts)
         return header + ":"
 
-    def _generate_list_response(self, movies: List[Dict], header: str, limit: int = 8) -> tuple[str, InlineKeyboardMarkup]:
+    def _generate_list_response(self, movies: List[Dict], header: str, limit: int = 8) -> tuple[
+        str, InlineKeyboardMarkup]:
         response = f"<strong>{header}</strong>\n"
         buttons = []
         for i, movie in enumerate(movies[:limit], 1):

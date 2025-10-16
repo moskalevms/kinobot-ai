@@ -3,16 +3,24 @@ import os
 import ssl
 import aiohttp
 import logging
+import asyncio
 from time import time
-from urllib.parse import urljoin
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 logger = logging.getLogger(__name__)
 
-# Отключаем предупреждения SSL (Sber использует самоподписанные сертификаты)
+# Отключаем предупреждения SSL
 ssl_context = ssl.create_default_context()
 ssl_context.check_hostname = False
 ssl_context.verify_mode = ssl.CERT_NONE
 
+# Определяем, какие исключения считать временными
+def is_transient_error(exception):
+    if isinstance(exception, aiohttp.ClientError):
+        return True
+    if "HTTP" in str(exception) and any(code in str(exception) for code in ["429", "500", "502", "503", "504"]):
+        return True
+    return False
 
 class GigaChatClient:
     def __init__(self):
@@ -27,7 +35,6 @@ class GigaChatClient:
     async def _get_token(self, session: aiohttp.ClientSession) -> str:
         if self.access_token and time() < self.token_expires_at:
             return self.access_token
-
         headers = {
             'RqUID': str(__import__('uuid').uuid4()),
             'Content-Type': 'application/x-www-form-urlencoded',
@@ -35,7 +42,6 @@ class GigaChatClient:
             'Authorization': f'Basic {self.auth_key}'
         }
         data = {'scope': 'GIGACHAT_API_PERS'}
-
         try:
             async with session.post(
                 self.auth_url,
@@ -56,6 +62,13 @@ class GigaChatClient:
             logger.error(f"[GigaChat] Ошибка получения токена: {e}")
             raise
 
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+        retry=retry_if_exception_type((aiohttp.ClientError, asyncio.TimeoutError, Exception)),
+        before_sleep=lambda retry_state: logger.warning(f"[GigaChat] Повторная попытка {retry_state.attempt_number}/3 после ошибки: {retry_state.outcome.exception()}"),
+        reraise=True
+    )
     async def chat_completions_create(
         self,
         session: aiohttp.ClientSession,
@@ -82,7 +95,8 @@ class GigaChatClient:
                 self.api_url,
                 headers=headers,
                 json=payload,
-                ssl=ssl_context
+                ssl=ssl_context,
+                timeout=aiohttp.ClientTimeout(total=30)
             ) as resp:
                 if resp.status != 200:
                     error_text = await resp.text()

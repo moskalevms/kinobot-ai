@@ -17,21 +17,20 @@ from telegram.ext import (
     CallbackQueryHandler
 )
 from dotenv import load_dotenv
-from session_manager import SessionManager
-from dialogue_manager import DialogueManager
+from .session_manager import SessionManager
+from .dialogue_manager import DialogueManager
 import aiohttp
 
 load_dotenv()
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+from .log_setup import setup_logging
+logger = setup_logging("telegram")
 
-# Инициализация менеджеров
+# Инициализация менеджеров (для polling-режима)
 session_manager = SessionManager()
 dialogue_manager = DialogueManager(session_manager)
 CURRENT_YEAR = 2025
 
 def get_main_menu():
-    """Клавиатура основного меню"""
     keyboard = [
         [KeyboardButton("🎭 Фильм по настроению"), KeyboardButton("🏆 Топ фильмов")],
         [KeyboardButton("🎬 Поиск по жанру")],
@@ -41,7 +40,6 @@ def get_main_menu():
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
 
 def get_top_menu():
-    """Подменю для выбора топов"""
     keyboard = [
         [KeyboardButton("🏆 Топ 50 фильмов"), KeyboardButton(f"🏆 Топ фильмов {CURRENT_YEAR}")],
         [KeyboardButton("📺 Топ 50 сериалов"), KeyboardButton(f"📺 Топ сериалов {CURRENT_YEAR}")],
@@ -88,6 +86,22 @@ async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(help_text, parse_mode='HTML')
 
+async def handle_top_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Выберите категорию топа:", reply_markup=get_top_menu())
+
+async def handle_genre_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "Какой жанр вас интересует?\n"
+        "Например: комедия, драма, боевик, триллер, ужасы, фантастика, мелодрама, приключения..."
+    )
+
+async def handle_mood_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "🎭 Какое у вас сейчас настроение?\n"
+        "Например: *грустное*, *весёлое*, *устал*, *скучно*, *хочу адреналина*, *страшно*, *романтическое*.",
+        parse_mode='Markdown'
+    )
+
 async def _process_and_reply(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: str, query: str):
     try:
         await update.message.chat.send_action(action="typing")
@@ -119,10 +133,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not user_message:
         await update.message.reply_text("Пожалуйста, введите запрос.")
         return
-
     logger.info(f"Сообщение от {user_id}: {user_message}")
 
-    # Обработка кнопок меню
     if user_message == "🎭 Фильм по настроению":
         await update.message.reply_text(
             "🎭 Какое у вас сейчас настроение?\n"
@@ -155,7 +167,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=get_main_menu()
         )
         return
-    # Топы
     elif user_message == "🏆 Топ 50 фильмов":
         user_query = "топ 50 фильмов"
     elif user_message == f"🏆 Топ фильмов {CURRENT_YEAR}":
@@ -234,6 +245,33 @@ async def handle_movie_detail(update: Update, context: ContextTypes.DEFAULT_TYPE
     else:
         await query.message.reply_text("Неизвестная команда.")
 
+# === Функции для webhook-режима ===
+
+def create_telegram_app() -> Application:
+    token = os.getenv("TELEGRAM_BOT_TOKEN")
+    if not token:
+        raise ValueError("TELEGRAM_BOT_TOKEN не найден в .env")
+    application = Application.builder().token(token).build()
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("help", handle_help))
+    application.add_handler(CommandHandler("movie", handle_movie_command))
+    application.add_handler(CommandHandler("top", handle_top_command))
+    application.add_handler(CommandHandler("genre", handle_genre_command))
+    application.add_handler(CommandHandler("mood", handle_mood_command))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    application.add_error_handler(error_handler)
+    application.add_handler(CallbackQueryHandler(handle_movie_detail))
+    return application
+
+def setup_webhook(app: Application, webhook_url: str):
+    import asyncio
+    async def _set():
+        await app.bot.set_webhook(url=webhook_url)
+        logger.info(f"Вебхук установлен: {webhook_url}")
+    asyncio.run(_set())
+
+# === Запуск в режиме polling ===
+
 def main():
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     if not token:
@@ -242,10 +280,13 @@ def main():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", handle_help))
     application.add_handler(CommandHandler("movie", handle_movie_command))
+    application.add_handler(CommandHandler("top", handle_top_command))
+    application.add_handler(CommandHandler("genre", handle_genre_command))
+    application.add_handler(CommandHandler("mood", handle_mood_command))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_error_handler(error_handler)
     application.add_handler(CallbackQueryHandler(handle_movie_detail))
-    logger.info("Telegram бот запущен...")
+    logger.info("Telegram бот запущен в режиме polling...")
     application.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":

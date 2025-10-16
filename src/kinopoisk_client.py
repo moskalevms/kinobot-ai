@@ -1,10 +1,19 @@
 # src/kinopoisk_client.py
 import aiohttp
 import logging
+import asyncio
 from typing import Optional, List, Dict, Tuple
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from .config import KINOPOISK_URL
 
 logger = logging.getLogger(__name__)
+
+def is_kinopoisk_transient_error(exception):
+    if isinstance(exception, aiohttp.ClientError):
+        return True
+    if "HTTP" in str(exception) and any(code in str(exception) for code in ["429", "500", "502", "503", "504"]):
+        return True
+    return False
 
 class KinopoiskClient:
     def __init__(self, api_key: str):
@@ -15,17 +24,38 @@ class KinopoiskClient:
             'Accept': 'application/json'
         }
 
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=5),
+        retry=retry_if_exception_type((aiohttp.ClientError, asyncio.TimeoutError)),
+        before_sleep=lambda retry_state: logger.warning(f"[Kinopoisk] Повторная попытка {retry_state.attempt_number}/3 для запроса: {retry_state.args}"),
+        reraise=True
+    )
     async def _make_request(self, session: aiohttp.ClientSession, url: str, params: dict) -> Optional[dict]:
         try:
-            async with session.get(url, params=params, headers=self.headers, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+            async with session.get(
+                url,
+                params=params,
+                headers=self.headers,
+                timeout=aiohttp.ClientTimeout(total=10)
+            ) as resp:
                 if resp.status == 200:
                     return await resp.json()
                 else:
                     logger.error(f"[Kinopoisk] HTTP {resp.status}: {await resp.text()}")
+                    # Повторяем только для 429/5xx
+                    if resp.status in (429, 500, 502, 503, 504):
+                        raise aiohttp.ClientResponseError(
+                            request_info=resp.request_info,
+                            history=resp.history,
+                            status=resp.status,
+                            message=f"HTTP {resp.status}",
+                            headers=resp.headers
+                        )
                     return None
         except Exception as e:
             logger.error(f"[Kinopoisk] Ошибка запроса: {e}")
-            return None
+            raise
 
     async def search_movies(
         self,

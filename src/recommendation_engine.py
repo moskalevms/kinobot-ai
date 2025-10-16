@@ -5,6 +5,7 @@ from .utils.movie_filter import filter_movies_by_quality
 from .kinopoisk_client import KinopoiskClient
 logger = logging.getLogger(__name__)
 
+
 class RecommendationEngine:
     def __init__(self, kinopoisk_client: KinopoiskClient):
         self.kinopoisk_client = kinopoisk_client
@@ -45,6 +46,7 @@ class RecommendationEngine:
                     genre_name = 'аниме'
                 elif genre_name.lower() == 'анимация':
                     genre_name = 'мультфильм'
+
         logger.info(f"Разрешённые исключаемые жанры: {allowed_excluded_genres}")
         logger.info(f"Российский поиск: {is_russian_search}")
 
@@ -103,6 +105,7 @@ class RecommendationEngine:
         candidates = []
         min_votes_override = None
         actual_genre = genre_name
+
         if genre_name == 'аниме':
             search_types = ['anime', 'tv-series', 'movie']
         else:
@@ -111,7 +114,9 @@ class RecommendationEngine:
         for search_type in search_types:
             if len(candidates) >= limit * 2:
                 break
-            if is_top:
+
+            # 🔧 ИСПРАВЛЕНИЕ: top250 НЕ ИСПОЛЬЗУЕТСЯ при year_range
+            if is_top and year_range is None:
                 top_data = await self.kinopoisk_client.search_recommendation(
                     session,
                     genre=actual_genre,
@@ -161,6 +166,7 @@ class RecommendationEngine:
             allowed_excluded_genres=allowed_excluded_genres,
             is_russian_search=is_russian_search
         )
+
         return self._format_movies_list(filtered, limit)
 
     async def _get_general_recommendations(
@@ -182,6 +188,7 @@ class RecommendationEngine:
             allowed_excluded_genres = set()
         candidates = []
         actual_genre = genre_name
+
         if genre_name == 'аниме':
             search_types = ['anime', 'tv-series', 'movie']
         else:
@@ -190,6 +197,8 @@ class RecommendationEngine:
         for search_type in search_types:
             if len(candidates) >= limit * 2:
                 break
+
+            # Здесь year_range всегда None, поэтому top250 можно использовать
             if is_top:
                 top_data = await self.kinopoisk_client.search_recommendation(
                     session,
@@ -227,6 +236,7 @@ class RecommendationEngine:
             allowed_excluded_genres=allowed_excluded_genres,
             is_russian_search=is_russian_search
         )
+
         return self._format_movies_list(filtered, limit)
 
     def _format_movies_list(self, movies: List[Dict], limit: int) -> List[Dict]:
@@ -241,21 +251,26 @@ class RecommendationEngine:
             if not title or not str(title).strip():
                 logger.warning(f"[RecommendationEngine] Пропущен фильм без основного названия: ID={movie.get('id')}")
                 continue
+
             genres = []
             for g in movie.get('genres', []):
                 if isinstance(g, dict) and g.get('name'):
                     genres.append(g['name'])
             genre_str = ', '.join(genres)
+
             countries = []
             for c in movie.get('countries', []):
                 if isinstance(c, dict) and c.get('name'):
                     countries.append(c['name'])
             country_str = ', '.join(countries)
+
             rating_obj = movie.get('rating', {})
             rating_imdb = rating_obj.get('imdb')
             rating_kp = rating_obj.get('kp')
+
             from .utils.movie_filter import is_russian_content
             is_russian = is_russian_content(movie)
+
             if is_russian and rating_kp is not None:
                 best_rating = rating_kp
                 rating_source = "КП"
@@ -268,11 +283,13 @@ class RecommendationEngine:
             else:
                 best_rating = '—'
                 rating_source = "—"
+
             description = (movie.get('description') or '')[:500]
             poster_url = ''
             poster = movie.get('poster')
             if isinstance(poster, dict):
                 poster_url = poster.get('url', '')
+
             formatted_movie = {
                 'id': movie.get('id'),
                 'title': title.strip(),
@@ -289,5 +306,6 @@ class RecommendationEngine:
                 'type': movie.get('type', 'movie')
             }
             formatted.append(formatted_movie)
+
         logger.info(f"[RecommendationEngine] Отформатировано фильмов: {len(formatted)} из запрошенных {limit}")
         return formatted
