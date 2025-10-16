@@ -308,7 +308,8 @@ class RecommendationEngine:
                 'rating_source': rating_source,
                 'description': description,
                 'poster_url': poster_url,
-                'kinopoisk_url': f"https://www.kinopoisk.ru/film/{movie.get('id')}/" if movie.get('id') else None
+                'kinopoisk_url': f"https://www.kinopoisk.ru/film/{movie.get('id')}/" if movie.get('id') else None,
+                'type': movie.get('type', 'movie')
             }
             formatted.append(formatted_movie)
 

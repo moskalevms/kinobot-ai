@@ -102,7 +102,16 @@ class DialogueManager:
 
         self.movie_agent.clear_cache()
         last_movies = session.last_movies
-        movie_type = params.get('movie_type', session.last_params.get('movie_type', 'movie'))  # ← добавлено
+        if session.last_movies and isinstance(session.last_movies[0], dict):
+            detected_type = session.last_movies[0].get('type') or session.last_movies[0].get('movie_type')
+            if detected_type == 'tv-series':
+                movie_type = 'tv-series'
+            elif detected_type == 'movie':
+                movie_type = 'movie'
+            else:
+                movie_type = session.last_params.get('movie_type', 'movie')
+        else:
+            movie_type = session.last_params.get('movie_type', 'movie')
 
         # === Сценарий 1: один фильм ===
         if len(last_movies) == 1:
@@ -146,7 +155,7 @@ class DialogueManager:
                 year_range=year_range,
                 min_imdb_rating=min_rating,
                 limit=25,
-                movie_type=movie_type  # ← добавлено
+                movie_type=movie_type
             )
 
         # Исключаем дубликаты
@@ -158,7 +167,7 @@ class DialogueManager:
         content_type = "сериалов" if movie_type == 'tv-series' else "фильмов"  # ← для заголовка
         response_text, reply_markup = self._generate_list_response(
             final_movies,
-            f"Фильмы, похожие на «{base_title}»:".replace("Фильмы", content_type)  # ← динамично
+            "Вот что ещё может вам понравиться:"
         )
 
         return {
@@ -177,7 +186,7 @@ class DialogueManager:
             }
         last_params = session.last_params.copy()
         last_movie_ids = {m['id'] for m in session.last_movies if m.get('id')}
-        movie_type = last_params.get('movie_type', 'movie')  # ← добавлено
+        movie_type = last_params.get('movie_type', 'movie')
         mood_genres = last_params.get('mood_genres') or [last_params.get('genre')] if last_params.get('genre') else ['комедия']
 
         all_new_movies = []
@@ -195,7 +204,7 @@ class DialogueManager:
                 country=last_params.get('country'),
                 min_imdb_rating=last_params.get('min_rating') or 6.0,
                 limit=30,
-                movie_type=movie_type  # ← добавлено
+                movie_type=movie_type
             )
             for m in raw_movies:
                 mid = m.get('id')
@@ -215,8 +224,8 @@ class DialogueManager:
                 director=last_params.get('director'),
                 country=last_params.get('country'),
                 min_imdb_rating=last_params.get('min_rating') or 6.0,
-                limit=8,
-                movie_type=movie_type  # ← добавлено
+                limit=13,
+                movie_type=movie_type
             )
             all_new_movies = raw_movies[:13]
             content_type = "сериалов" if movie_type == 'tv-series' else "фильмов"
