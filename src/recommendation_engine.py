@@ -3,7 +3,6 @@ import logging
 from typing import List, Dict, Optional, Tuple, Set
 from .utils.movie_filter import filter_movies_by_quality
 from .kinopoisk_client import KinopoiskClient
-
 logger = logging.getLogger(__name__)
 
 
@@ -11,41 +10,37 @@ class RecommendationEngine:
     def __init__(self, kinopoisk_client: KinopoiskClient):
         self.kinopoisk_client = kinopoisk_client
 
-    def get_recommendations(
-            self,
-            genre_name: Optional[str] = None,
-            year: Optional[int] = None,
-            year_range: Optional[Tuple[int, int]] = None,
-            actor: Optional[str] = None,
-            director: Optional[str] = None,
-            country: Optional[str] = None,
-            min_imdb_rating: float = 6.5,
-            limit: int = 8,
-            movie_type: str = 'movie',
-            query: Optional[str] = None,
-            is_top: bool = False
+    async def get_recommendations(
+        self,
+        session,
+        genre_name: Optional[str] = None,
+        year: Optional[int] = None,
+        year_range: Optional[Tuple[int, int]] = None,
+        actor: Optional[str] = None,
+        director: Optional[str] = None,
+        country: Optional[str] = None,
+        min_imdb_rating: float = 6.5,
+        limit: int = 8,
+        movie_type: str = 'movie',
+        query: Optional[str] = None,
+        is_top: bool = False
     ) -> List[Dict]:
-
         allowed_excluded_genres = set()
         excluded_genres_list = [
             'мюзикл', 'концерт', 'документальный', 'документалка',
             'короткометражка', 'короткометражный', 'биография',
             'артхаус', 'реалити-тв', 'ток-шоу', 'церемония',
             'эротика', 'для взрослых', 'adult', '18+', 'спорт', 'спортивный',
-            'новости', 'новостной'  # ← добавлены новости
+            'новости', 'новостной'
         ]
-
         is_russian_search = country and country.lower() in ['россия', 'russia', 'российская федерация']
-
         if genre_name and genre_name.lower() in excluded_genres_list:
             allowed_excluded_genres.add(genre_name.lower())
-
         if query:
             query_lower = query.lower()
             for excluded_genre in excluded_genres_list:
                 if excluded_genre in query_lower:
                     allowed_excluded_genres.add(excluded_genre)
-
             if genre_name and genre_name.lower() in ['анимация', 'мультфильм']:
                 if 'аниме' in (query or '').lower():
                     genre_name = 'аниме'
@@ -56,7 +51,8 @@ class RecommendationEngine:
         logger.info(f"Российский поиск: {is_russian_search}")
 
         if year or year_range:
-            return self._get_range_recommendations(
+            return await self._get_range_recommendations(
+                session,
                 genre_name=genre_name,
                 year=year,
                 year_range=year_range,
@@ -72,7 +68,8 @@ class RecommendationEngine:
                 is_russian_search=is_russian_search
             )
         else:
-            return self._get_general_recommendations(
+            return await self._get_general_recommendations(
+                session,
                 genre_name=genre_name,
                 actor=actor,
                 director=director,
@@ -86,44 +83,42 @@ class RecommendationEngine:
                 is_russian_search=is_russian_search
             )
 
-    def _get_range_recommendations(
-            self,
-            genre_name: Optional[str] = None,
-            year: Optional[int] = None,
-            year_range: Optional[Tuple[int, int]] = None,
-            actor: Optional[str] = None,
-            director: Optional[str] = None,
-            country: Optional[str] = None,
-            min_imdb_rating: float = 6.0,
-            limit: int = 8,
-            movie_type: str = 'movie',
-            query: Optional[str] = None,
-            is_top: bool = False,
-            allowed_excluded_genres: Set[str] = None,
-            is_russian_search: bool = False
+    async def _get_range_recommendations(
+        self,
+        session,
+        genre_name: Optional[str] = None,
+        year: Optional[int] = None,
+        year_range: Optional[Tuple[int, int]] = None,
+        actor: Optional[str] = None,
+        director: Optional[str] = None,
+        country: Optional[str] = None,
+        min_imdb_rating: float = 6.0,
+        limit: int = 8,
+        movie_type: str = 'movie',
+        query: Optional[str] = None,
+        is_top: bool = False,
+        allowed_excluded_genres: Set[str] = None,
+        is_russian_search: bool = False
     ) -> List[Dict]:
-
         if allowed_excluded_genres is None:
             allowed_excluded_genres = set()
-
         candidates = []
         min_votes_override = None
-
         actual_genre = genre_name
 
-        # Специальная обработка для аниме
         if genre_name == 'аниме':
-            # Для аниме пробуем разные типы контента
             search_types = ['anime', 'tv-series', 'movie']
         else:
             search_types = [movie_type]
 
         for search_type in search_types:
-            if len(candidates) >= limit * 2:  # Собираем больше кандидатов для фильтрации
+            if len(candidates) >= limit * 2:
                 break
 
-            if is_top:
-                top_data = self.kinopoisk_client.search_recommendation(
+            # 🔧 ИСПРАВЛЕНИЕ: top250 НЕ ИСПОЛЬЗУЕТСЯ при year_range
+            if is_top and year_range is None:
+                top_data = await self.kinopoisk_client.search_recommendation(
+                    session,
                     genre=actual_genre,
                     year=year,
                     country=country,
@@ -133,7 +128,8 @@ class RecommendationEngine:
                 if top_data and top_data.get('docs'):
                     candidates.extend(top_data['docs'])
 
-            search_data = self.kinopoisk_client.search_movies(
+            search_data = await self.kinopoisk_client.search_movies(
+                session,
                 genre=actual_genre,
                 year=year,
                 year_range=year_range,
@@ -173,29 +169,26 @@ class RecommendationEngine:
 
         return self._format_movies_list(filtered, limit)
 
-    def _get_general_recommendations(
-            self,
-            genre_name: Optional[str] = None,
-            actor: Optional[str] = None,
-            director: Optional[str] = None,
-            country: Optional[str] = None,
-            min_imdb_rating: float = 6.5,
-            limit: int = 8,
-            movie_type: str = 'movie',
-            query: Optional[str] = None,
-            is_top: bool = False,
-            allowed_excluded_genres: Set[str] = None,
-            is_russian_search: bool = False
+    async def _get_general_recommendations(
+        self,
+        session,
+        genre_name: Optional[str] = None,
+        actor: Optional[str] = None,
+        director: Optional[str] = None,
+        country: Optional[str] = None,
+        min_imdb_rating: float = 6.5,
+        limit: int = 8,
+        movie_type: str = 'movie',
+        query: Optional[str] = None,
+        is_top: bool = False,
+        allowed_excluded_genres: Set[str] = None,
+        is_russian_search: bool = False
     ) -> List[Dict]:
-
         if allowed_excluded_genres is None:
             allowed_excluded_genres = set()
-
         candidates = []
-
         actual_genre = genre_name
 
-        # Специальная обработка для аниме
         if genre_name == 'аниме':
             search_types = ['anime', 'tv-series', 'movie']
         else:
@@ -205,8 +198,10 @@ class RecommendationEngine:
             if len(candidates) >= limit * 2:
                 break
 
+            # Здесь year_range всегда None, поэтому top250 можно использовать
             if is_top:
-                top_data = self.kinopoisk_client.search_recommendation(
+                top_data = await self.kinopoisk_client.search_recommendation(
+                    session,
                     genre=actual_genre,
                     country=country,
                     limit=250,
@@ -215,7 +210,8 @@ class RecommendationEngine:
                 if top_data and top_data.get('docs'):
                     candidates.extend(top_data['docs'])
 
-            search_data = self.kinopoisk_client.search_movies(
+            search_data = await self.kinopoisk_client.search_movies(
+                session,
                 genre=actual_genre,
                 actor=actor,
                 director=director,
@@ -245,15 +241,12 @@ class RecommendationEngine:
 
     def _format_movies_list(self, movies: List[Dict], limit: int) -> List[Dict]:
         formatted = []
-
         for movie in movies:
             if len(formatted) >= limit:
                 break
-
             if not isinstance(movie, dict) or movie.get('id') is None:
                 logger.warning(f"[RecommendationEngine] Пропущен некорректный фильм: {movie}")
                 continue
-
             title = movie.get('name')
             if not title or not str(title).strip():
                 logger.warning(f"[RecommendationEngine] Пропущен фильм без основного названия: ID={movie.get('id')}")
@@ -277,6 +270,7 @@ class RecommendationEngine:
 
             from .utils.movie_filter import is_russian_content
             is_russian = is_russian_content(movie)
+
             if is_russian and rating_kp is not None:
                 best_rating = rating_kp
                 rating_source = "КП"
@@ -308,7 +302,8 @@ class RecommendationEngine:
                 'rating_source': rating_source,
                 'description': description,
                 'poster_url': poster_url,
-                'kinopoisk_url': f"https://www.kinopoisk.ru/film/{movie.get('id')}/" if movie.get('id') else None
+                'kinopoisk_url': f"https://www.kinopoisk.ru/film/{movie.get('id')}/" if movie.get('id') else None,
+                'type': movie.get('type', 'movie')
             }
             formatted.append(formatted_movie)
 
