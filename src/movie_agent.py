@@ -2,9 +2,9 @@
 import logging
 import time
 from typing import List, Dict, Optional, Tuple
-from .kinopoisk_client import KinopoiskClient
-from .recommendation_engine import RecommendationEngine
-from .config import KINOPOISK_API_KEY, CACHE_TTL
+from kinopoisk_client import KinopoiskClient
+from recommendation_engine import RecommendationEngine
+from config import KINOPOISK_API_KEY, CACHE_TTL
 
 logger = logging.getLogger(__name__)
 CANDIDATE_LIMIT = 150

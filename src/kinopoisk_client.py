@@ -4,7 +4,7 @@ import logging
 import asyncio
 from typing import Optional, List, Dict, Tuple
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
-from .config import KINOPOISK_URL
+from config import KINOPOISK_URL
 
 logger = logging.getLogger(__name__)
 

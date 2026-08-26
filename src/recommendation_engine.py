@@ -1,8 +1,8 @@
 # src/recommendation_engine.py
 import logging
 from typing import List, Dict, Optional, Tuple, Set
-from .utils.movie_filter import filter_movies_by_quality
-from .kinopoisk_client import KinopoiskClient
+from utils.movie_filter import filter_movies_by_quality
+from kinopoisk_client import KinopoiskClient
 logger = logging.getLogger(__name__)
 
 

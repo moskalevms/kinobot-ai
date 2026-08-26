@@ -4,11 +4,14 @@ import sys
 import logging
 import uuid
 import asyncio
+from datetime import timedelta
 from flask import Flask, render_template, request, jsonify, session
 from flask_executor import Executor
+from flask_login import LoginManager, login_required, current_user
 import aiohttp
 from telegram import Update
 from telegram.ext import Application
+
 
 # Настройка путей
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
@@ -18,13 +21,37 @@ from dotenv import load_dotenv
 from session_manager import SessionManager
 from dialogue_manager import DialogueManager
 from telegram_bot import create_telegram_app, setup_webhook
+from models.database import db, User, Role, UserStatistics
 
 load_dotenv()
 from log_setup import setup_logging
+
 logger = setup_logging("web")
 
 app = Flask(__name__, template_folder='templates', static_folder='static')
 app.secret_key = os.environ.get('FLASK_SECRET_KEY') or 'kinobot_dev_secret_key_2025'
+
+# Настройка БД
+app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv(
+    'DATABASE_URL',
+    'postgresql://postgres:postgres@localhost:5432/kinobot_db'
+)
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(days=31)
+
+# Инициализация БД
+db.init_app(app)
+
+# Flask-Login
+login_manager = LoginManager()
+login_manager.init_app(app)
+login_manager.login_view = 'admin_login'
+
+
+@login_manager.user_loader
+def load_user(user_id):
+    return User.query.get(int(user_id))
+
 
 # Инициализация менеджеров
 session_manager = SessionManager()
@@ -47,9 +74,11 @@ if BOT_MODE == "webhook":
 elif BOT_MODE != "polling":
     raise ValueError(f"Неизвестный BOT_MODE: {BOT_MODE}")
 
+
 @app.before_request
 def make_session_permanent():
     session.permanent = True
+
 
 @app.before_request
 def ensure_user_id():
@@ -57,14 +86,28 @@ def ensure_user_id():
         session['user_id'] = str(uuid.uuid4())
         logger.info(f"Создан новый user_id: {session['user_id']}")
 
+
+@app.before_request
+def track_statistics():
+    """Отслеживание статистики пользователей"""
+    if request.endpoint and not request.endpoint.startswith('admin_') and not request.endpoint.startswith('static'):
+        user_id = session.get('user_id')
+        if user_id:
+            user_agent = request.headers.get('User-Agent')
+            ip_address = request.remote_addr
+            UserStatistics.track_user(user_id, user_agent, ip_address)
+
+
 @app.route('/')
 def index():
     return render_template('index.html')
+
 
 async def _process_chat_async(user_id: str, user_message: str) -> dict:
     async with aiohttp.ClientSession() as http_session:
         result = await dialogue_manager.process_message(http_session, user_id, user_message)
         return result
+
 
 @app.route('/chat', methods=['POST'])
 def chat():
@@ -96,6 +139,7 @@ def chat():
             "needs_clarification": True
         }), 500
 
+
 @app.route('/new-chat', methods=['POST'])
 def new_chat():
     try:
@@ -110,9 +154,11 @@ def new_chat():
         logger.error(f"Ошибка в /new-chat: {e}")
         return jsonify({"status": "error"}), 500
 
+
 async def _health_check_async() -> bool:
     async with aiohttp.ClientSession() as http_session:
         return await dialogue_manager.movie_agent.health_check(http_session)
+
 
 @app.route('/health')
 def health():
@@ -130,15 +176,6 @@ def health():
         logger.error(f"Health check failed: {e}")
         return jsonify({"status": "error"}), 500
 
-@app.route('/debug/session')
-def debug_session():
-    if not app.debug:
-        return jsonify({"error": "Not available in production"}), 403
-    user_id = session.get('user_id')
-    if not user_id:
-        return jsonify({"error": "No session"})
-    user_session = session_manager.get_session(user_id)
-    return jsonify(user_session.to_dict())
 
 # Webhook endpoint для Telegram
 @app.route('/telegram-webhook', methods=['POST'])
@@ -149,6 +186,43 @@ def telegram_webhook():
     update = Update.de_json(request.get_json(force=True), telegram_app.bot)
     telegram_app.update_queue.put_nowait(update)
     return jsonify({"status": "ok"})
+
+
+# Импорт админ-роутов
+from admin_routes import admin_bp
+
+app.register_blueprint(admin_bp, url_prefix='/admin')
+
+
+# Команда для инициализации БД
+@app.cli.command()
+def init_db():
+    """Инициализация базы данных"""
+    db.create_all()
+
+    # Создание роли администратора
+    admin_role = Role.query.filter_by(name='admin').first()
+    if not admin_role:
+        admin_role = Role(name='admin', description='Администратор системы')
+        db.session.add(admin_role)
+        db.session.commit()
+        print("✅ Роль 'admin' создана")
+
+    # Создание пользователя-администратора
+    admin_user = User.query.filter_by(username='admin').first()
+    if not admin_user:
+        admin_user = User(
+            username='admin',
+            email='admin@kinobot.local',
+            role_id=admin_role.id
+        )
+        admin_user.set_password(os.getenv('ADMIN_PASSWORD', 'admin123'))
+        db.session.add(admin_user)
+        db.session.commit()
+        print("✅ Пользователь 'admin' создан")
+
+    print("✅ База данных инициализирована")
+
 
 if __name__ == '__main__':
     logger.info("Запуск Flask приложения...")

@@ -3,10 +3,10 @@ import os
 import logging
 
 from typing import Dict, Any, List, Optional, Tuple
-from .movie_agent import MovieAgent
-from .session_manager import SessionManager, UserSession
-from .intent_classifier import IntentClassifier
-from .llm_router import LLMRouter
+from movie_agent import MovieAgent
+from session_manager import SessionManager, UserSession
+from intent_classifier import IntentClassifier
+from llm_router import LLMRouter
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 logger = logging.getLogger(__name__)

@@ -17,12 +17,12 @@ from telegram.ext import (
     CallbackQueryHandler
 )
 from dotenv import load_dotenv
-from .session_manager import SessionManager
-from .dialogue_manager import DialogueManager
+from session_manager import SessionManager
+from dialogue_manager import DialogueManager
 import aiohttp
 
 load_dotenv()
-from .log_setup import setup_logging
+from log_setup import setup_logging
 logger = setup_logging("telegram")
 
 # Инициализация менеджеров (для polling-режима)
