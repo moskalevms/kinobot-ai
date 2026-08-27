@@ -13,5 +13,5 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Шаг 4: Копируем весь исходный код
 COPY src/ ./src/
 
-# Шаг 5: Запускаем бота как модуль (в режиме polling)
-CMD ["python", "-m", "src.telegram_bot"]
+# Шаг 5: Запускаем бота в режиме polling (плоские импорты, запуск без -m)
+CMD ["python", "src/telegram_bot.py"]

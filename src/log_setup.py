@@ -5,42 +5,58 @@ from logging.handlers import RotatingFileHandler
 import glob
 from datetime import datetime, timedelta
 
-LOG_DIR = "logs"
+LOG_DIR = os.getenv("LOG_DIR", "logs")
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 МБ
 MAX_DAYS = 4
 
+# Файловый хендлер настраивается один раз на процесс (идемпотентно)
+_handler_configured = False
+# Активные лог-файлы процесса — их нельзя удалять при ротации
+_active_log_files: set = set()
+
+
 def setup_logging(service_name: str = "app") -> logging.Logger:
-    """Настраивает ротацию логов: до 50 МБ на файл, хранение 4 дня"""
-    os.makedirs(LOG_DIR, exist_ok=True)
-    log_file = os.path.join(LOG_DIR, f"{service_name}.log")
+    """Настраивает ротацию логов: до 50 МБ на файл, хранение 4 дня.
 
-    # Ротация по размеру: максимум 50 МБ, 1 backup-файл (итого 2 файла = 100 МБ максимум)
-    # Но мы будем удалять старые файлы по дате, так что backup можно увеличить
-    handler = RotatingFileHandler(
-        log_file,
-        maxBytes=MAX_FILE_SIZE,
-        backupCount=10,  # достаточно для 4 дней при активной нагрузке
-        encoding='utf-8'
-    )
-    formatter = logging.Formatter(
-        '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-    )
-    handler.setFormatter(formatter)
+    Хендлер корневого логгера создаётся один раз на процесс, повторные
+    вызовы не добавляют дублей. Возвращает именованный логгер сервиса.
+    Каталог логов задаётся переменной окружения LOG_DIR (по умолчанию
+    «logs», разрешается в абсолютный путь на момент старта).
+    """
+    global _handler_configured
+    log_dir = os.path.abspath(LOG_DIR)
+    os.makedirs(log_dir, exist_ok=True)
+    log_file = os.path.join(log_dir, f"{service_name}.log")
+    _active_log_files.add(log_file)
 
-    logger = logging.getLogger()
-    logger.setLevel(logging.INFO)
-    logger.addHandler(handler)
+    if not _handler_configured:
+        handler = RotatingFileHandler(
+            log_file,
+            maxBytes=MAX_FILE_SIZE,
+            backupCount=10,
+            encoding='utf-8'
+        )
+        formatter = logging.Formatter(
+            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        )
+        handler.setFormatter(formatter)
+        root = logging.getLogger()
+        root.setLevel(logging.INFO)
+        root.addHandler(handler)
+        _handler_configured = True
 
-    # Удаляем логи старше MAX_DAYS
-    cleanup_old_logs()
+    cleanup_old_logs(log_dir)
 
-    return logger
+    return logging.getLogger(service_name)
 
-def cleanup_old_logs():
-    """Удаляет лог-файлы старше MAX_DAYS"""
+
+def cleanup_old_logs(log_dir: str):
+    """Удаляет лог-файлы старше MAX_DAYS, пропуская активные файлы процесса"""
     cutoff = datetime.now() - timedelta(days=MAX_DAYS)
-    log_files = glob.glob(os.path.join(LOG_DIR, "*.log*"))
+    log_files = glob.glob(os.path.join(log_dir, "*.log*"))
     for file_path in log_files:
+        if os.path.abspath(file_path) in _active_log_files:
+            continue
         try:
             file_time = datetime.fromtimestamp(os.path.getctime(file_path))
             if file_time < cutoff:

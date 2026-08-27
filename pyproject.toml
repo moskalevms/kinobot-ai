@@ -1,0 +1,38 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 200
+target-version = "py310"
+extend-exclude = [".venv", "data", "logs", "src/logs", "__pycache__"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W"]
+
+# Осознанные исключения: в этих файлах импорт намеренно идёт после
+# настройки sys.path / load_dotenv (плоская модель импортов проекта)
+[tool.ruff.lint.per-file-ignores]
+"init_db.py" = ["E402"]
+"src/app.py" = ["E402"]
+"src/telegram_bot.py" = ["E402"]
+
+[tool.mypy]
+python_version = "3.10"
+files = ["src", "init_db.py"]
+ignore_missing_imports = true
+check_untyped_defs = false
+warn_unused_ignores = false
+
+# Осознанные исключения:
+# - модели flask-sqlalchemy наследуются от динамического db.Model,
+#   который mypy не может разрешить;
+# - хендлеры python-telegram-bot зарегистрированы под фильтрами,
+#   гарантирующими message, но типы библиотеки считают его Optional —
+#   подавляем только эти коды, остальные проверки в файле активны.
+[[tool.mypy.overrides]]
+module = ["models.database", "src.models.database"]
+ignore_errors = true
+
+[[tool.mypy.overrides]]
+module = ["telegram_bot", "src.telegram_bot"]
+disable_error_code = ["union-attr", "arg-type"]

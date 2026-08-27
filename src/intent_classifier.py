@@ -3,7 +3,7 @@ import re
 import json
 import logging
 import os
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 
 from llm_router import LLMRouter
 

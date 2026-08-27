@@ -1,9 +1,8 @@
 # src/models/database.py
-import os
 from datetime import datetime, date
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
-from sqlalchemy import func, Date
+from sqlalchemy import func
 from flask_login import UserMixin
 
 db = SQLAlchemy()
@@ -42,6 +41,21 @@ class Role(db.Model):
 
     def __repr__(self):
         return f'<Role {self.name}>'
+
+
+class DialogueSession(db.Model):
+    """Сессия диалога пользователя: последние рекомендации и параметры поиска"""
+    __tablename__ = 'dialogue_sessions'
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.String(255), unique=True, nullable=False, index=True)
+    last_movies = db.Column(db.JSON, default=list)
+    last_params = db.Column(db.JSON, default=dict)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    last_activity = db.Column(db.DateTime, default=datetime.utcnow)
+
+    def __repr__(self):
+        return f'<DialogueSession {self.user_id}>'
 
 
 class UserStatistics(db.Model):

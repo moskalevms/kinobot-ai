@@ -7,11 +7,8 @@ import asyncio
 from datetime import timedelta
 from flask import Flask, render_template, request, jsonify, session
 from flask_executor import Executor
-from flask_login import LoginManager, login_required, current_user
+from flask_login import LoginManager
 import aiohttp
-from telegram import Update
-from telegram.ext import Application
-
 
 # Настройка путей
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
@@ -20,8 +17,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from dotenv import load_dotenv
 from session_manager import SessionManager
 from dialogue_manager import DialogueManager
-from telegram_bot import create_telegram_app, setup_webhook
-from models.database import db, User, Role, UserStatistics
+from models.database import db, User, UserStatistics
 
 load_dotenv()
 from log_setup import setup_logging
@@ -29,7 +25,20 @@ from log_setup import setup_logging
 logger = setup_logging("web")
 
 app = Flask(__name__, template_folder='templates', static_folder='static')
-app.secret_key = os.environ.get('FLASK_SECRET_KEY') or 'kinobot_dev_secret_key_2025'
+
+# Секретный ключ сессий: обязателен в продакшене, временный в разработке
+FLASK_ENV = os.getenv('FLASK_ENV', 'development')
+_secret_key = os.getenv('FLASK_SECRET_KEY')
+if not _secret_key:
+    if FLASK_ENV == 'production':
+        raise RuntimeError(
+            "FLASK_SECRET_KEY не задан: запуск в продакшене без секретного ключа запрещён"
+        )
+    _secret_key = 'kinobot_dev_temporary_key'
+    logger.warning(
+        "FLASK_SECRET_KEY не задан — используется временный ключ, только для разработки"
+    )
+app.secret_key = _secret_key
 
 # Настройка БД
 app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv(
@@ -53,26 +62,12 @@ def load_user(user_id):
     return User.query.get(int(user_id))
 
 
-# Инициализация менеджеров
-session_manager = SessionManager()
+# Инициализация менеджеров (сессии — в PostgreSQL текущего приложения)
+session_manager = SessionManager(app)
 dialogue_manager = DialogueManager(session_manager)
 
 # Executor для запуска async-функций в Flask
 executor = Executor(app)
-
-# Глобальное приложение Telegram (для webhook)
-telegram_app: Application = None
-
-BOT_MODE = os.getenv("BOT_MODE", "polling")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")
-
-if BOT_MODE == "webhook":
-    if not WEBHOOK_URL:
-        raise ValueError("WEBHOOK_URL обязателен в режиме webhook")
-    telegram_app = create_telegram_app()
-    setup_webhook(telegram_app, WEBHOOK_URL)
-elif BOT_MODE != "polling":
-    raise ValueError(f"Неизвестный BOT_MODE: {BOT_MODE}")
 
 
 @app.before_request
@@ -168,7 +163,7 @@ def health():
         if healthy:
             return jsonify({
                 "status": "healthy",
-                "sessions_count": len(session_manager.sessions)
+                "sessions_count": session_manager.count_sessions()
             }), 200
         else:
             return jsonify({"status": "unhealthy"}), 503
@@ -177,54 +172,14 @@ def health():
         return jsonify({"status": "error"}), 500
 
 
-# Webhook endpoint для Telegram
-@app.route('/telegram-webhook', methods=['POST'])
-def telegram_webhook():
-    global telegram_app
-    if telegram_app is None:
-        return jsonify({"error": "Telegram app not initialized"}), 500
-    update = Update.de_json(request.get_json(force=True), telegram_app.bot)
-    telegram_app.update_queue.put_nowait(update)
-    return jsonify({"status": "ok"})
-
-
 # Импорт админ-роутов
 from admin_routes import admin_bp
 
 app.register_blueprint(admin_bp, url_prefix='/admin')
 
 
-# Команда для инициализации БД
-@app.cli.command()
-def init_db():
-    """Инициализация базы данных"""
-    db.create_all()
-
-    # Создание роли администратора
-    admin_role = Role.query.filter_by(name='admin').first()
-    if not admin_role:
-        admin_role = Role(name='admin', description='Администратор системы')
-        db.session.add(admin_role)
-        db.session.commit()
-        print("✅ Роль 'admin' создана")
-
-    # Создание пользователя-администратора
-    admin_user = User.query.filter_by(username='admin').first()
-    if not admin_user:
-        admin_user = User(
-            username='admin',
-            email='admin@kinobot.local',
-            role_id=admin_role.id
-        )
-        admin_user.set_password(os.getenv('ADMIN_PASSWORD', 'admin123'))
-        db.session.add(admin_user)
-        db.session.commit()
-        print("✅ Пользователь 'admin' создан")
-
-    print("✅ База данных инициализирована")
-
-
 if __name__ == '__main__':
     logger.info("Запуск Flask приложения...")
-    logging.basicConfig(level=logging.DEBUG)
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    if FLASK_ENV != 'production':
+        logging.basicConfig(level=logging.DEBUG)
+    app.run(debug=(FLASK_ENV != 'production'), host='0.0.0.0', port=5000)

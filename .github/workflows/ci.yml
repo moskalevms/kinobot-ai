@@ -1,0 +1,41 @@
+name: CI
+
+on: [push, pull_request]
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+
+      - name: Установка зависимостей
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Ruff
+        run: ruff check src tests init_db.py
+
+      - name: Mypy
+        run: mypy
+
+      - name: Pytest
+        run: pytest
+        env:
+          GIGACHAT_AUTH_KEY: test-key
+          KINOPOISK_API_KEY: test-key
+          TELEGRAM_BOT_TOKEN: test-token
+
+  docker-build:
+    runs-on: ubuntu-latest
+    needs: lint-and-test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Сборка образа
+        run: docker build -t kinobot-ai:ci .

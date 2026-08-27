@@ -3,7 +3,7 @@ from flask import Blueprint, render_template, redirect, url_for, request, flash
 from flask_login import login_user, logout_user, login_required, current_user
 from functools import wraps
 from datetime import datetime, timedelta, date
-from models.database import db, User, Role, UserStatistics
+from models.database import db, User, UserStatistics
 
 admin_bp = Blueprint('admin', __name__)
 

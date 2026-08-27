@@ -1,7 +1,7 @@
 # src/recommendation_engine.py
 import logging
 from typing import List, Dict, Optional, Tuple, Set
-from utils.movie_filter import filter_movies_by_quality
+from utils.movie_filter import filter_movies_by_quality, is_russian_content
 from kinopoisk_client import KinopoiskClient
 logger = logging.getLogger(__name__)
 
@@ -33,7 +33,7 @@ class RecommendationEngine:
             'эротика', 'для взрослых', 'adult', '18+', 'спорт', 'спортивный',
             'новости', 'новостной'
         ]
-        is_russian_search = country and country.lower() in ['россия', 'russia', 'российская федерация']
+        is_russian_search = bool(country and country.lower() in ['россия', 'russia', 'российская федерация'])
         if genre_name and genre_name.lower() in excluded_genres_list:
             allowed_excluded_genres.add(genre_name.lower())
         if query:
@@ -97,12 +97,12 @@ class RecommendationEngine:
         movie_type: str = 'movie',
         query: Optional[str] = None,
         is_top: bool = False,
-        allowed_excluded_genres: Set[str] = None,
+        allowed_excluded_genres: Optional[Set[str]] = None,
         is_russian_search: bool = False
     ) -> List[Dict]:
         if allowed_excluded_genres is None:
             allowed_excluded_genres = set()
-        candidates = []
+        candidates: List[Dict] = []
         min_votes_override = None
         actual_genre = genre_name
 
@@ -181,12 +181,12 @@ class RecommendationEngine:
         movie_type: str = 'movie',
         query: Optional[str] = None,
         is_top: bool = False,
-        allowed_excluded_genres: Set[str] = None,
+        allowed_excluded_genres: Optional[Set[str]] = None,
         is_russian_search: bool = False
     ) -> List[Dict]:
         if allowed_excluded_genres is None:
             allowed_excluded_genres = set()
-        candidates = []
+        candidates: List[Dict] = []
         actual_genre = genre_name
 
         if genre_name == 'аниме':
@@ -226,7 +226,12 @@ class RecommendationEngine:
                 candidates.extend(search_data['docs'])
 
         seen_ids = set()
-        unique_candidates = [m for m in candidates if m.get('id') not in seen_ids and not seen_ids.add(m.get('id'))]
+        unique_candidates = []
+        for movie in candidates:
+            mid = movie.get('id')
+            if mid and mid not in seen_ids:
+                seen_ids.add(mid)
+                unique_candidates.append(movie)
 
         filtered = filter_movies_by_quality(
             unique_candidates,
@@ -240,7 +245,7 @@ class RecommendationEngine:
         return self._format_movies_list(filtered, limit)
 
     def _format_movies_list(self, movies: List[Dict], limit: int) -> List[Dict]:
-        formatted = []
+        formatted: List[Dict] = []
         for movie in movies:
             if len(formatted) >= limit:
                 break
@@ -268,7 +273,6 @@ class RecommendationEngine:
             rating_imdb = rating_obj.get('imdb')
             rating_kp = rating_obj.get('kp')
 
-            from .utils.movie_filter import is_russian_content
             is_russian = is_russian_content(movie)
 
             if is_russian and rating_kp is not None:
