@@ -4,9 +4,7 @@ import logging
 from telegram import (
     Update,
     ReplyKeyboardMarkup,
-    KeyboardButton,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup
+    KeyboardButton
 )
 from telegram.ext import (
     Application,
@@ -17,18 +15,18 @@ from telegram.ext import (
     CallbackQueryHandler
 )
 from dotenv import load_dotenv
-from .session_manager import SessionManager
-from .dialogue_manager import DialogueManager
+from session_manager import SessionManager
+from dialogue_manager import DialogueManager
+from config import CURRENT_YEAR
 import aiohttp
 
 load_dotenv()
-from .log_setup import setup_logging
+from log_setup import setup_logging
 logger = setup_logging("telegram")
 
 # Инициализация менеджеров (для polling-режима)
 session_manager = SessionManager()
 dialogue_manager = DialogueManager(session_manager)
-CURRENT_YEAR = 2025
 
 def get_main_menu():
     keyboard = [
@@ -245,7 +243,7 @@ async def handle_movie_detail(update: Update, context: ContextTypes.DEFAULT_TYPE
     else:
         await query.message.reply_text("Неизвестная команда.")
 
-# === Функции для webhook-режима ===
+# === Сборка приложения бота (единая точка регистрации хендлеров) ===
 
 def create_telegram_app() -> Application:
     token = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -263,29 +261,13 @@ def create_telegram_app() -> Application:
     application.add_handler(CallbackQueryHandler(handle_movie_detail))
     return application
 
-def setup_webhook(app: Application, webhook_url: str):
-    import asyncio
-    async def _set():
-        await app.bot.set_webhook(url=webhook_url)
-        logger.info(f"Вебхук установлен: {webhook_url}")
-    asyncio.run(_set())
-
 # === Запуск в режиме polling ===
 
 def main():
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     if not token:
         raise ValueError("TELEGRAM_BOT_TOKEN не найден в .env")
-    application = Application.builder().token(token).build()
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("help", handle_help))
-    application.add_handler(CommandHandler("movie", handle_movie_command))
-    application.add_handler(CommandHandler("top", handle_top_command))
-    application.add_handler(CommandHandler("genre", handle_genre_command))
-    application.add_handler(CommandHandler("mood", handle_mood_command))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    application.add_error_handler(error_handler)
-    application.add_handler(CallbackQueryHandler(handle_movie_detail))
+    application = create_telegram_app()
     logger.info("Telegram бот запущен в режиме polling...")
     application.run_polling(drop_pending_updates=True)
 

@@ -2,14 +2,14 @@
 import aiohttp
 import logging
 import asyncio
-from typing import Optional, List, Dict, Tuple
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
-from .config import KINOPOISK_URL
+from typing import Optional, Dict, Tuple
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception
+from config import KINOPOISK_URL
 
 logger = logging.getLogger(__name__)
 
 def is_kinopoisk_transient_error(exception):
-    if isinstance(exception, aiohttp.ClientError):
+    if isinstance(exception, (aiohttp.ClientError, asyncio.TimeoutError)):
         return True
     if "HTTP" in str(exception) and any(code in str(exception) for code in ["429", "500", "502", "503", "504"]):
         return True
@@ -27,7 +27,7 @@ class KinopoiskClient:
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=1, max=5),
-        retry=retry_if_exception_type((aiohttp.ClientError, asyncio.TimeoutError)),
+        retry=retry_if_exception(is_kinopoisk_transient_error),
         before_sleep=lambda retry_state: logger.warning(f"[Kinopoisk] Повторная попытка {retry_state.attempt_number}/3 для запроса: {retry_state.args}"),
         reraise=True
     )

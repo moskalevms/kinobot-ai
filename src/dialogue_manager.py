@@ -1,12 +1,13 @@
-# src/dialogue_manager.py
+﻿# src/dialogue_manager.py
 import os
 import logging
 
-from typing import Dict, Any, List, Optional, Tuple
-from .movie_agent import MovieAgent
-from .session_manager import SessionManager, UserSession
-from .intent_classifier import IntentClassifier
-from .llm_router import LLMRouter
+from typing import Dict, Any, List, Optional
+from movie_agent import MovieAgent
+from session_manager import SessionManager, UserSession
+from intent_classifier import IntentClassifier
+from llm_router import LLMRouter
+from config import CURRENT_YEAR
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 logger = logging.getLogger(__name__)
@@ -65,6 +66,7 @@ class DialogueManager:
                 result = await self._handle_general_request(http_session, message, intent_params, session)
 
             self._update_session(session, result)
+            self.session_manager.save_session(session)
             return result
         except Exception as e:
             logger.error(f"Ошибка обработки сообщения: {e}", exc_info=True)
@@ -104,7 +106,6 @@ class DialogueManager:
                 "response": "У меня нет информации о предыдущих рекомендациях. Сначала найдите фильм, а потом попросите похожие.",
                 "needs_clarification": True
             }
-        self.movie_agent.clear_cache()
         last_movies = session.last_movies
 
         # Определяем movie_type
@@ -143,10 +144,10 @@ class DialogueManager:
         elif explicit_year is not None:
             # Десятилетие: "2000" → (2000, 2009)
             if explicit_year % 10 == 0 and 1900 <= explicit_year <= 2020:
-                year_range = (explicit_year, min(explicit_year + 9, 2025))
+                year_range = (explicit_year, min(explicit_year + 9, CURRENT_YEAR))
             else:
                 # Конкретный год: "2005" → (2002, 2008)
-                year_range = (max(1900, explicit_year - 3), min(2025, explicit_year + 3))
+                year_range = (max(1900, explicit_year - 3), min(CURRENT_YEAR, explicit_year + 3))
         else:
             # Нет явного года — берём из последнего фильма
             if len(last_movies) == 1:
@@ -154,11 +155,11 @@ class DialogueManager:
                 rating = last_movies[0].get('rating_imdb') or last_movies[0].get('rating_kp') or 6.5
                 min_rating = max(6.0, rating - 0.5)
                 if year:
-                    year_range = (max(1900, year - 3), min(2025, year + 3))
+                    year_range = (max(1900, year - 3), min(CURRENT_YEAR, year + 3))
             else:
                 years = [m.get('year') for m in last_movies if m.get('year')]
                 if years:
-                    year_range = (max(1900, min(years) - 2), min(2025, max(years) + 2))
+                    year_range = (max(1900, min(years) - 2), min(CURRENT_YEAR, max(years) + 2))
                 ratings = [m.get('rating_imdb') or m.get('rating_kp') for m in last_movies]
                 ratings = [r for r in ratings if r is not None]
                 if ratings:
@@ -172,7 +173,8 @@ class DialogueManager:
             min_imdb_rating=min_rating,
             limit=25,
             movie_type=movie_type,
-            country=country  # ← страна тоже из нового запроса или сессии
+            country=country,  # ← страна тоже из нового запроса или сессии
+            user_id=session.user_id
         )
 
         seen_ids = {m.get('id') for m in last_movies if m.get('id')}
@@ -205,7 +207,7 @@ class DialogueManager:
         mood_genres = last_params.get('mood_genres') or [last_params.get('genre')] if last_params.get('genre') else [
             'комедия']
 
-        all_new_movies = []
+        all_new_movies: List[Dict] = []
         seen_ids = set(last_movie_ids)
         for genre in mood_genres:
             if len(all_new_movies) >= 13:
@@ -220,7 +222,8 @@ class DialogueManager:
                 country=last_params.get('country'),
                 min_imdb_rating=last_params.get('min_rating') or 6.0,
                 limit=30,
-                movie_type=movie_type
+                movie_type=movie_type,
+                user_id=session.user_id
             )
             for m in raw_movies:
                 mid = m.get('id')
@@ -241,7 +244,8 @@ class DialogueManager:
                 country=last_params.get('country'),
                 min_imdb_rating=last_params.get('min_rating') or 6.0,
                 limit=13,
-                movie_type=movie_type
+                movie_type=movie_type,
+                user_id=session.user_id
             )
             all_new_movies = raw_movies[:13]
             response_text, reply_markup = self._generate_list_response(
@@ -304,8 +308,8 @@ class DialogueManager:
         year = params.get('year')
         year_range = params.get('year_range')
         is_decade = (year is not None and year % 10 == 0 and 1900 <= year <= 2020)
-        current_year = 2025
-        if is_decade and year_range is None:
+        current_year = CURRENT_YEAR
+        if year is not None and is_decade and year_range is None:
             year_range = (year, min(year + 9, current_year))
 
         min_rating = params.get('min_rating') or (6.5 if is_decade else 6.0)
@@ -313,7 +317,7 @@ class DialogueManager:
         movie_type = params.get('movie_type', 'movie')
         content_type = "сериалы" if movie_type == 'tv-series' else "фильмы"
         # === Множественный поиск по жанрам ===
-        all_movies = []
+        all_movies: List[Dict] = []
         seen_ids = set()
         if mood_genres:
             for genre in mood_genres:
@@ -330,7 +334,8 @@ class DialogueManager:
                     min_imdb_rating=min_rating,
                     limit=limit,
                     movie_type=movie_type,
-                    query=use_query
+                    query=use_query,
+                    user_id=session.user_id
                 )
                 for m in movies:
                     mid = m.get('id')
@@ -351,7 +356,8 @@ class DialogueManager:
                 min_imdb_rating=min_rating,
                 limit=limit,
                 movie_type=movie_type,
-                query=use_query
+                query=use_query,
+                user_id=session.user_id
             )
             for m in movies:
                 mid = m.get('id')
@@ -528,3 +534,4 @@ class DialogueManager:
 
     def clear_user_session(self, user_id: str):
         self.session_manager.clear_session(user_id)
+

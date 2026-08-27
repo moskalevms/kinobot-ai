@@ -2,9 +2,9 @@
 import logging
 import time
 from typing import List, Dict, Optional, Tuple
-from .kinopoisk_client import KinopoiskClient
-from .recommendation_engine import RecommendationEngine
-from .config import KINOPOISK_API_KEY, CACHE_TTL
+from kinopoisk_client import KinopoiskClient
+from recommendation_engine import RecommendationEngine
+from config import KINOPOISK_API_KEY, CACHE_TTL, CURRENT_YEAR
 
 logger = logging.getLogger(__name__)
 CANDIDATE_LIMIT = 150
@@ -15,11 +15,11 @@ class MovieAgent:
         self.use_api = use_api
         self.kinopoisk_client = KinopoiskClient(api_key=KINOPOISK_API_KEY)
         self.recommendation_engine = RecommendationEngine(self.kinopoisk_client)
-        self._search_cache = {}
-        self._last_search_failed = False
+        self._search_cache: Dict[str, Tuple[List[Dict], float]] = {}
 
-    def _get_cache_key(self, genre_name, year, year_range, actor, director, country, min_imdb_rating, limit, movie_type, query) -> str:
+    def _get_cache_key(self, user_id, genre_name, year, year_range, actor, director, country, min_imdb_rating, limit, movie_type, query) -> str:
         parts = [
+            user_id or '',
             genre_name or '',
             str(year),
             str(year_range),
@@ -45,19 +45,15 @@ class MovieAgent:
         min_imdb_rating: float = 6.5,
         limit: int = 8,
         movie_type: str = 'movie',
-        query: Optional[str] = None
+        query: Optional[str] = None,
+        user_id: Optional[str] = None
     ) -> List[Dict]:
-        current_year = 2025
+        current_year = CURRENT_YEAR
         if year_range and year_range[1] > current_year:
             year_range = (year_range[0], current_year)
             logger.info(f"Корректировка year_range на текущий год: {year_range}")
 
-        cache_key = self._get_cache_key(genre_name, year, year_range, actor, director, country, min_imdb_rating, limit, movie_type, query)
-
-        if self._last_search_failed:
-            self._search_cache.clear()
-            self._last_search_failed = False
-            logger.info("[MovieAgent] Кэш очищен из-за предыдущей ошибки поиска")
+        cache_key = self._get_cache_key(user_id, genre_name, year, year_range, actor, director, country, min_imdb_rating, limit, movie_type, query)
 
         if cache_key in self._search_cache:
             cached_data, timestamp = self._search_cache[cache_key]
@@ -84,16 +80,14 @@ class MovieAgent:
                 query=query,
                 is_top=is_top
             )
-            if not movies:
-                self._last_search_failed = True
-                logger.info("[MovieAgent] Поиск не дал результатов")
-            else:
+            if movies:
                 self._search_cache[cache_key] = (movies, time.time())
+            else:
+                logger.info("[MovieAgent] Поиск не дал результатов")
             logger.info(f"Найдено {movie_type}: {len(movies)}")
             return movies
         except Exception as e:
             logger.error(f"Ошибка в recommend_movies: {e}", exc_info=True)
-            self._last_search_failed = True
             return []
 
     async def search_by_title(self, session, title: str) -> List[Dict]:
@@ -145,12 +139,21 @@ class MovieAgent:
 
     async def health_check(self, session) -> bool:
         try:
-            test_movies = await self.recommend_movies(session, genre_name='комедия', limit=1)
+            test_movies = await self.recommend_movies(
+                session, genre_name='комедия', limit=1, user_id='health'
+            )
             return bool(test_movies)
         except Exception:
             return False
 
-    def clear_cache(self):
-        self._search_cache.clear()
-        self._last_search_failed = False
-        logger.info("[MovieAgent] Кэш очищен")
+    def clear_cache(self, user_id: Optional[str] = None):
+        """Очистить кэш поиска: только для пользователя, если задан user_id"""
+        if user_id is None:
+            self._search_cache.clear()
+            logger.info("[MovieAgent] Кэш очищен для всех пользователей")
+        else:
+            prefix = f"{user_id}_"
+            keys = [k for k in self._search_cache if k.startswith(prefix)]
+            for key in keys:
+                del self._search_cache[key]
+            logger.info(f"[MovieAgent] Кэш очищен для пользователя {user_id}: {len(keys)} записей")

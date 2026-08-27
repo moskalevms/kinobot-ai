@@ -5,7 +5,8 @@ import aiohttp
 import logging
 import asyncio
 from time import time
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+from typing import Dict, List, Optional
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception
 
 logger = logging.getLogger(__name__)
 
@@ -16,11 +17,17 @@ ssl_context.verify_mode = ssl.CERT_NONE
 
 # Определяем, какие исключения считать временными
 def is_transient_error(exception):
-    if isinstance(exception, aiohttp.ClientError):
+    if isinstance(exception, (aiohttp.ClientError, asyncio.TimeoutError)):
         return True
     if "HTTP" in str(exception) and any(code in str(exception) for code in ["429", "500", "502", "503", "504"]):
         return True
     return False
+
+def _log_retry(retry_state):
+    outcome = retry_state.outcome
+    exc = outcome.exception() if outcome is not None else 'неизвестная ошибка'
+    logger.warning(f"[GigaChat] Повторная попытка {retry_state.attempt_number}/3 после ошибки: {exc}")
+
 
 class GigaChatClient:
     def __init__(self):
@@ -65,15 +72,15 @@ class GigaChatClient:
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=2, max=10),
-        retry=retry_if_exception_type((aiohttp.ClientError, asyncio.TimeoutError, Exception)),
-        before_sleep=lambda retry_state: logger.warning(f"[GigaChat] Повторная попытка {retry_state.attempt_number}/3 после ошибки: {retry_state.outcome.exception()}"),
+        retry=retry_if_exception(is_transient_error),
+        before_sleep=_log_retry,
         reraise=True
     )
     async def chat_completions_create(
         self,
         session: aiohttp.ClientSession,
         model: str = "GigaChat",
-        messages: list = None,
+        messages: Optional[List[Dict]] = None,
         max_tokens: int = 500,
         temperature: float = 0.7
     ) -> str:

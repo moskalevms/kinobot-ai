@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Панель администратора</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+</head>
+<body>
+    <nav class="navbar navbar-dark bg-dark">
+        <div class="container-fluid">
+            <a class="navbar-brand" href="{{ url_for('admin.dashboard') }}">🎬 KinoBot Admin</a>
+            <div class="d-flex">
+                <span class="navbar-text me-3">{{ current_user.username }}</span>
+                <a href="{{ url_for('admin.admin_logout') }}" class="btn btn-outline-light btn-sm">Выход</a>
+            </div>
+        </div>
+    </nav>
+
+    <div class="container-fluid">
+        <div class="row">
+            <nav class="col-md-2 d-md-block bg-light sidebar mt-3">
+                <div class="position-sticky">
+                    <ul class="nav flex-column">
+                        <li class="nav-item">
+                            <a class="nav-link active" href="{{ url_for('admin.dashboard') }}">
+                                <i class="fas fa-home"></i> Главная
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link" href="{{ url_for('admin.statistics') }}">
+                                <i class="fas fa-chart-line"></i> Статистика
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link" href="{{ url_for('admin.users') }}">
+                                <i class="fas fa-users"></i> Пользователи
+                            </a>
+                        </li>
+                    </ul>
+                </div>
+            </nav>
+
+            <main class="col-md-10 ms-sm-auto px-md-4">
+                <div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom">
+                    <h1 class="h2">Статистика пользователей</h1>
+                </div>
+
+                <div class="row mb-4">
+                    <div class="col-md-3">
+                        <div class="card text-white bg-primary">
+                            <div class="card-body">
+                                <h5 class="card-title">Сегодня</h5>
+                                <p class="card-text display-6">{{ today_unique }}</p>
+                                <small>Уникальных пользователей</small>
+                                <p class="mt-2">Запросов: {{ today_queries }}</p>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="card text-white bg-success">
+                            <div class="card-body">
+                                <h5 class="card-title">Этот месяц</h5>
+                                <p class="card-text display-6">{{ month_unique }}</p>
+                                <small>Уникальных пользователей</small>
+                                <p class="mt-2">Запросов: {{ month_queries }}</p>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="card text-white bg-info">
+                            <div class="card-body">
+                                <h5 class="card-title">За всё время</h5>
+                                <p class="card-text display-6">{{ total_unique }}</p>
+                                <small>Уникальных пользователей</small>
+                                <p class="mt-2">Запросов: {{ total_queries }}</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="table-responsive">
+                    <h3>Статистика по дням (последние 30 дней)</h3>
+                    <table class="table table-striped table-hover">
+                        <thead>
+                            <tr>
+                                <th>Дата</th>
+                                <th>Уникальные пользователи</th>
+                                <th>Всего запросов</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for stat in daily_stats %}
+                            <tr>
+                                <td>{{ stat.date.strftime('%d.%m.%Y') }}</td>
+                                <td>{{ stat.unique_users }}</td>
+                                <td>{{ stat.total_queries }}</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </main>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>

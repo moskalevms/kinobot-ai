@@ -51,7 +51,7 @@ def get_weighted_rating(movie: Dict, is_russian_search: bool = False) -> float:
             return 0.0
 
 
-def should_exclude_by_genre(movie: Dict, allowed_excluded_genres: Set[str] = None) -> bool:
+def should_exclude_by_genre(movie: Dict, allowed_excluded_genres: Optional[Set[str]] = None) -> bool:
     if allowed_excluded_genres is None:
         allowed_excluded_genres = set()
 
@@ -80,13 +80,11 @@ def filter_movies_by_quality(
         min_votes_override: Optional[int] = None,
         exclude_anime: bool = True,
         prioritize_english_speaking: bool = False,
-        allowed_excluded_genres: Set[str] = None,
+        allowed_excluded_genres: Optional[Set[str]] = None,
         is_russian_search: bool = False
 ) -> List[Dict]:
     if allowed_excluded_genres is None:
         allowed_excluded_genres = set()
-
-    current_year = 2025
 
     def _calculate_min_votes(y: Optional[int]) -> int:
         if not y:
@@ -117,10 +115,7 @@ def filter_movies_by_quality(
                 logger.debug(f"[MovieFilter] Пропущен аниме: {name}")
                 continue
 
-        rating = movie.get('rating', {})
         votes = movie.get('votes', {})
-        imdb_rating = rating.get('imdb')
-        kp_rating = rating.get('kp')
         imdb_votes = votes.get('imdb') or 0
         kp_votes = votes.get('kp') or 0
 
