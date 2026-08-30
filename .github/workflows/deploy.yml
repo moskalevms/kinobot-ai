@@ -1,0 +1,107 @@
+# Деплой Kinobot на VPS.
+# Триггеры: пуш тега релиза v* или ручной запуск (workflow_dispatch)
+# с указанием тега — в том числе для отката на предыдущую версию.
+# Схема: исходники доставляются на VPS по ssh, образ собирается на VPS,
+# запуск через docker compose. Внешний реестр образов не используется.
+
+name: Деплой на VPS
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Тег релиза для деплоя (например, v1.1.0)'
+        required: true
+        type: string
+
+env:
+  DEPLOY_TAG: ${{ inputs.tag || github.ref_name }}
+  VPS_HOST: ${{ secrets.VPS_HOST }}
+  VPS_USER: ${{ secrets.VPS_USER }}
+  VPS_PORT: ${{ secrets.VPS_PORT }}
+
+jobs:
+  deploy:
+    name: Сборка и деплой
+    runs-on: ubuntu-latest
+    steps:
+      - name: Проверка секретов (до обращения к VPS)
+        env:
+          VPS_SSH_PRIVATE_KEY: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
+        run: |
+          if [ -z "$VPS_HOST" ] || [ -z "$VPS_USER" ] || [ -z "$VPS_PORT" ] || [ -z "$VPS_SSH_PRIVATE_KEY" ]; then
+            echo "::error::Не заданы секреты деплоя (VPS_SSH_PRIVATE_KEY, VPS_HOST, VPS_USER, VPS_PORT)"
+            exit 1
+          fi
+          echo "Тег деплоя: $DEPLOY_TAG"
+
+      - name: Checkout целевого тега
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.DEPLOY_TAG }}
+
+      - name: Настройка SSH-доступа к VPS
+        env:
+          VPS_SSH_PRIVATE_KEY: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$VPS_SSH_PRIVATE_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -p "$VPS_PORT" -H "$VPS_HOST" >> ~/.ssh/known_hosts
+          SSH_OPTS="-i $HOME/.ssh/vps_key -p $VPS_PORT -o StrictHostKeyChecking=yes"
+          echo "SSH_OPTS=$SSH_OPTS" >> "$GITHUB_ENV"
+
+      - name: Доставка исходников на VPS (rsync)
+        run: |
+          rsync -az --delete \
+            --exclude '.git' \
+            --exclude '.venv' \
+            --exclude '.env*' \
+            --exclude 'logs' \
+            --exclude 'src/logs' \
+            --exclude 'data' \
+            --exclude 'docs' \
+            --exclude 'openspec' \
+            --exclude '__pycache__' \
+            -e "ssh $SSH_OPTS" \
+            ./ "$VPS_USER@$VPS_HOST:~/kinobot/app/"
+
+      - name: Сборка образа на VPS
+        run: |
+          ssh $SSH_OPTS "$VPS_USER@$VPS_HOST" \
+            "cd ~/kinobot/app && docker build -t kinobot-ai:$DEPLOY_TAG ."
+
+      - name: Обновление compose-файла на VPS
+        run: |
+          scp $SSH_OPTS deploy/docker-compose.prod.yml \
+            "$VPS_USER@$VPS_HOST:~/kinobot/docker-compose.prod.yml"
+
+      - name: Запуск контейнеров
+        run: |
+          ssh $SSH_OPTS "$VPS_USER@$VPS_HOST" \
+            "cd ~/kinobot && APP_VERSION=$DEPLOY_TAG \
+             docker compose --env-file .env.production -f docker-compose.prod.yml up -d"
+
+      - name: Проверка результата деплоя
+        run: |
+          echo "Ожидание 30 секунд после старта..."
+          sleep 30
+          STATE=$(ssh $SSH_OPTS "$VPS_USER@$VPS_HOST" \
+            "docker inspect -f '{{.State.Status}}' kinobot" || echo "missing")
+          RESTARTS=$(ssh $SSH_OPTS "$VPS_USER@$VPS_HOST" \
+            "docker inspect -f '{{.RestartCount}}' kinobot" || echo "-1")
+          echo "Статус контейнера: $STATE, перезапусков: $RESTARTS"
+          if [ "$STATE" != "running" ] || [ "$RESTARTS" != "0" ]; then
+            echo "::error::Контейнер kinobot не работает (статус: $STATE, перезапусков: $RESTARTS)"
+            ssh $SSH_OPTS "$VPS_USER@$VPS_HOST" "docker logs --tail 50 kinobot" || true
+            exit 1
+          fi
+          echo "Деплой успешен: контейнер работает без перезапусков."
+
+      - name: Очистка неиспользуемых образов
+        if: always()
+        run: |
+          ssh $SSH_OPTS "$VPS_USER@$VPS_HOST" "docker image prune -f" || true

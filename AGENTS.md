@@ -67,10 +67,15 @@ README.md — черновик-концепция, а не документац�
 
 ## Деплой
 
-Образ собирается локально и пушится в `kinobot-ai.cr.cloud.ru/beta/kinobot-ai`,
-затем ssh/scp на VM и `docker compose -f docker-compose.prod.yml up -d`
-(файл живёт на VM, в репо отсутствует). Порядок и команды — `docs/dev_guide.md`.
-Тег версии в `docker-compose.yml` поднимается вручную (примеры в доках устарели).
+Продакшен — VPS с Ubuntu 24 (38.180.228.133), CI/CD через GitHub Actions
+(`.github/workflows/deploy.yml`): релиз пушем тега `v*`, ручной запуск
+и откат — `workflow_dispatch` с тегом. Образ `kinobot-ai:<тег>` собирается
+на самом VPS (реестр не используется), исходники доставляются rsync,
+запуск `docker compose -f docker-compose.prod.yml` (файл в репо —
+`deploy/`, копируется на VPS при деплое); секреты — только на VPS
+в `~/kinobot/.env.production`. Порядок и команды — `docs/dev_guide.md`.
+Локальный `docker-compose.yml` с образом из реестра — только для
+разработки, в продакшене не используется.
 
 ## Управление изменениями
 

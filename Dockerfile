@@ -10,8 +10,9 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Шаг 4: Копируем весь исходный код
+# Шаг 4: Копируем исходный код и скрипт инициализации БД
 COPY src/ ./src/
+COPY init_db.py .
 
 # Шаг 5: Запускаем бота в режиме polling (плоские импорты, запуск без -m)
 CMD ["python", "src/telegram_bot.py"]

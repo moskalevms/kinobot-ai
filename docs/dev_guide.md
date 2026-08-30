@@ -24,34 +24,111 @@ python init_db.py
 в `src/logs/`, а не в корневой `logs/` (том `app_logs` в деплое
 смонтирован в `/app/logs` — не менять).
 
-## Сборка и публикация образа
+## Продакшен
+
+Продакшен — VPS с Ubuntu 24 (38.180.228.133), один контейнер с ботом
++ PostgreSQL в docker-сети. Конфигурация `deploy/docker-compose.prod.yml`
+лежит в репозитории и копируется на VPS при каждом деплое; секреты —
+только на VPS в `~/kinobot/.env.production` (состав —
+`docs/vm_services.md`). Реестр образов не используется: образ
+`kinobot-ai:<тег>` собирается на самом VPS.
+
+### Релиз (автодеплой)
+
+Пайплайн GitHub Actions (`.github/workflows/deploy.yml`) запускается
+пушем тега:
 
 ```
-# 1. Собрать образ
-docker build -t kinobot-ai .
-
-# 2. Логин в реестр Cloud.ru
-docker login kinobot-ai.cr.cloud.ru
-
-# 3. Протегировать (тег поднимается вручную при релизе)
-docker tag kinobot-ai kinobot-ai.cr.cloud.ru/beta/kinobot-ai:<тег>
-
-# 4. Пуш
-docker push kinobot-ai.cr.cloud.ru/beta/kinobot-ai:<тег>
+git tag v1.2.0
+git push origin v1.2.0
 ```
 
-## Деплой на VM
+Пайплайн: доставляет исходники на VPS (rsync), собирает образ,
+запускает контейнеры и проверяет, что контейнер бота работает без
+перезапусков. Ход деплоя виден во вкладке Actions.
+
+### Ручной запуск и откат
+
+Во вкладке Actions → «Деплой на VPS» → Run workflow укажите тег.
+Так выполняется откат: запустите пайплайн с тегом предыдущего релиза
+(его образ сохраняется на VPS).
+
+### Секреты для пайплайна
+
+В настройках репозитория GitHub (Settings → Secrets):
+
+- `VPS_SSH_PRIVATE_KEY` — приватный ключ, выпущенный специально для
+  Actions (см. подготовку ниже);
+- `VPS_HOST` — `38.180.228.133`;
+- `VPS_USER` — `kinobot`;
+- `VPS_PORT` — `22`.
+
+### Первичная подготовка VPS (один раз)
+
+1. Скопировать и выполнить скрипт подготовки (отдельно для каждого
+   нового сервера):
+
+   ```
+   scp deploy/bootstrap_vps.sh root@38.180.228.133:
+   ssh root@38.180.228.133 'bash bootstrap_vps.sh'
+   ```
+
+   Скрипт ставит Docker/Compose/rsync, создаёт пользователя `kinobot`
+   и структуру `~/kinobot/`, выводит шаблон `.env.production`.
+
+2. Заполнить секреты на VPS:
+
+   ```
+   ssh root@38.180.228.133 'nano /home/kinobot/kinobot/.env.production'
+   ```
+
+   Обязательные переменные: `FLASK_SECRET_KEY`, `ADMIN_PASSWORD`,
+   `DB_PASSWORD`, `TELEGRAM_BOT_TOKEN`, `KINOPOISK_API_KEY`,
+   `GIGACHAT_AUTH_KEY`. Права файла — 600.
+
+3. Выпустить ключ для GitHub Actions и прописать его на VPS:
+
+   ```
+   ssh-keygen -t ed25519 -f kinobot_actions_key -C "github-actions"
+   # публичный ключ — на VPS:
+   ssh root@38.180.228.133 'mkdir -p /home/kinobot/.ssh && \
+     cat >> /home/kinobot/.ssh/authorized_keys' < kinobot_actions_key.pub
+   # приватный ключ — в секрет VPS_SSH_PRIVATE_KEY на GitHub,
+   # сам файл после этого удалить с машины.
+   ```
+
+4. Добавить секреты в репозиторий GitHub (список выше).
+
+5. После первого успешного деплоя — инициализация БД (один раз):
+
+   ```
+   ssh kinobot@38.180.228.133 \
+     'cd ~/kinobot && APP_VERSION=v1.2.0 docker compose \
+      --env-file .env.production -f docker-compose.prod.yml \
+      run --rm kinobot python init_db.py'
+   ```
+
+### Ручной деплой (если CI недоступен)
 
 ```
-ssh user1@176.108.252.72
+rsync -az --delete --exclude '.git' --exclude '.venv' --exclude '.env*' \
+  --exclude logs --exclude src/logs --exclude data --exclude docs \
+  --exclude openspec --exclude __pycache__ \
+  ./ kinobot@38.180.228.133:~/kinobot/app/
 
-scp docker-compose.yml user1@176.108.252.72:~/kinobot-deploy/
-scp .env.production user1@176.108.252.72:~/kinobot-deploy/
+scp deploy/docker-compose.prod.yml kinobot@38.180.228.133:~/kinobot/
 
-# на VM:
-docker compose -f docker-compose.prod.yml up -d
+ssh kinobot@38.180.228.133 'cd ~/kinobot/app && docker build -t kinobot-ai:v1.2.0 . && \
+  cd ~/kinobot && APP_VERSION=v1.2.0 docker compose \
+  --env-file .env.production -f docker-compose.prod.yml up -d'
 ```
 
-`docker-compose.prod.yml` живёт на VM, в репо отсутствует. Перед
-деплоем убедиться, что в окружении на VM заданы `ADMIN_PASSWORD`
-и `FLASK_SECRET_KEY` (состав сервисов — в `docs/vm_services.md`).
+### Замечания
+
+- Перед первым деплоем убедиться, что бот с этим токеном не запущен
+  в другом месте (два polling-экземпляра конфликтуют).
+- Деплой пересоздаёт контейнер бота — кратковременный простой.
+- Образы старых тегов на VPS не удаляются (нужны для отката);
+  чистятся только висячие (`docker image prune -f` в пайплайне).
+- Порт 5432 наружу не публикуется — PostgreSQL доступен только
+  в docker-сети.
