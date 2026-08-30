@@ -7,3 +7,5 @@ __pycache__/
 /logs/
 /.env.production
 src/logs/
+/openspec/changes/add-admin-profile/
+/openspec/

@@ -17,7 +17,8 @@ sys.path.insert(0, os.path.dirname(__file__))
 from dotenv import load_dotenv
 from session_manager import SessionManager
 from dialogue_manager import DialogueManager
-from models.database import db, User, UserStatistics
+from models.database import db, User
+from statistics_tracker import track_client_request
 
 load_dotenv()
 from log_setup import setup_logging
@@ -54,7 +55,9 @@ db.init_app(app)
 # Flask-Login
 login_manager = LoginManager()
 login_manager.init_app(app)
-login_manager.login_view = 'admin_login'
+login_manager.login_view = 'admin.admin_login'
+login_manager.login_message = 'Пожалуйста, войдите в систему'
+login_manager.login_message_category = 'warning'
 
 
 @login_manager.user_loader
@@ -84,13 +87,16 @@ def ensure_user_id():
 
 @app.before_request
 def track_statistics():
-    """Отслеживание статистики пользователей"""
-    if request.endpoint and not request.endpoint.startswith('admin_') and not request.endpoint.startswith('static'):
+    """Клиентская статистика: учитывается только отправка сообщения в чате"""
+    if request.endpoint == 'chat':
         user_id = session.get('user_id')
         if user_id:
-            user_agent = request.headers.get('User-Agent')
-            ip_address = request.remote_addr
-            UserStatistics.track_user(user_id, user_agent, ip_address)
+            track_client_request(
+                user_id,
+                request.headers.get('User-Agent'),
+                request.remote_addr,
+                app=app
+            )
 
 
 @app.route('/')

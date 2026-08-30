@@ -11,7 +11,10 @@
     <nav class="navbar navbar-dark bg-dark">
         <div class="container-fluid">
             <a class="navbar-brand" href="{{ url_for('admin.dashboard') }}">🎬 KinoBot Admin</a>
-            <a href="{{ url_for('admin.admin_logout') }}" class="btn btn-outline-light btn-sm">Выход</a>
+            <div class="d-flex">
+                <a href="{{ url_for('admin.profile') }}" class="btn btn-outline-light btn-sm me-2">Профиль</a>
+                <a href="{{ url_for('admin.admin_logout') }}" class="btn btn-outline-light btn-sm">Выход</a>
+            </div>
         </div>
     </nav>
 

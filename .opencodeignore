@@ -1,0 +1,29 @@
+# Зависимости и сборка
+node_modules/
+dist/
+build/
+.next/
+out/
+coverage/
+*.log
+*.tmp
+*.swp
+
+# Системные и IDE
+.git/
+.vscode/
+.idea/
+.DS_Store
+
+# Сгенерированный код и типы
+*.d.ts
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+prisma/generated/
+openapi.json
+
+# Документация (чтобы не читал лишнего)
+docs/
+*.md
+!AGENTS.md # Оставляем только главный файл инструкций

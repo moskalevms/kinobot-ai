@@ -1,4 +1,5 @@
 # src/admin_routes.py
+import re
 from flask import Blueprint, render_template, redirect, url_for, request, flash
 from flask_login import login_user, logout_user, login_required, current_user
 from functools import wraps
@@ -6,6 +7,8 @@ from datetime import datetime, timedelta, date
 from models.database import db, User, UserStatistics
 
 admin_bp = Blueprint('admin', __name__)
+
+EMAIL_RE = re.compile(r'^[^@\s]+@[^@\s]+\.[^@\s]+$')
 
 
 def admin_required(f):
@@ -116,3 +119,57 @@ def users():
     """Управление пользователями"""
     all_users = User.query.all()
     return render_template('admin/users.html', users=all_users)
+
+
+@admin_bp.route('/profile', methods=['GET', 'POST'])
+@admin_required
+def profile():
+    """Профиль администратора: смена пароля и почтового адреса"""
+    if request.method == 'POST':
+        form_type = request.form.get('form_type')
+
+        if form_type == 'change_password':
+            current_password = request.form.get('current_password', '')
+            new_password = request.form.get('new_password', '')
+            confirm_password = request.form.get('confirm_password', '')
+
+            if not current_user.check_password(current_password):
+                flash('Неверный текущий пароль', 'danger')
+            elif len(new_password) < 8:
+                flash('Новый пароль должен содержать не менее 8 символов', 'danger')
+            elif new_password != confirm_password:
+                flash('Новый пароль и подтверждение не совпадают', 'danger')
+            elif current_user.check_password(new_password):
+                flash('Новый пароль совпадает с текущим', 'danger')
+            else:
+                current_user.set_password(new_password)
+                try:
+                    db.session.commit()
+                    flash('Пароль успешно изменён', 'success')
+                except Exception:
+                    db.session.rollback()
+                    flash('Не удалось сохранить изменения', 'danger')
+            return redirect(url_for('admin.profile'))
+
+        if form_type == 'change_email':
+            new_email = request.form.get('new_email', '').strip()
+
+            if not EMAIL_RE.match(new_email):
+                flash('Укажите корректный почтовый адрес', 'danger')
+            elif User.query.filter(User.email == new_email,
+                                   User.id != current_user.id).first():
+                flash('Этот почтовый адрес уже занят другим пользователем', 'danger')
+            else:
+                current_user.email = new_email
+                try:
+                    db.session.commit()
+                    flash('Почтовый адрес успешно изменён', 'success')
+                except Exception:
+                    db.session.rollback()
+                    flash('Не удалось сохранить изменения', 'danger')
+            return redirect(url_for('admin.profile'))
+
+        flash('Неизвестная форма', 'danger')
+        return redirect(url_for('admin.profile'))
+
+    return render_template('admin/profile.html')

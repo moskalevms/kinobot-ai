@@ -17,6 +17,7 @@ from telegram.ext import (
 from dotenv import load_dotenv
 from session_manager import SessionManager
 from dialogue_manager import DialogueManager
+from statistics_tracker import track_client_request
 from config import CURRENT_YEAR
 import aiohttp
 
@@ -101,6 +102,7 @@ async def handle_mood_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     )
 
 async def _process_and_reply(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: str, query: str):
+    track_client_request(f"tg:{user_id}")
     try:
         await update.message.chat.send_action(action="typing")
         async with aiohttp.ClientSession() as http_session:
