@@ -53,6 +53,9 @@ jobs:
           ssh-keyscan -p "$VPS_PORT" -H "$VPS_HOST" >> ~/.ssh/known_hosts
           SSH_OPTS="-i $HOME/.ssh/vps_key -p $VPS_PORT -o StrictHostKeyChecking=yes"
           echo "SSH_OPTS=$SSH_OPTS" >> "$GITHUB_ENV"
+          # у scp порт задаётся через -P (не -p)
+          SCP_OPTS="-i $HOME/.ssh/vps_key -P $VPS_PORT -o StrictHostKeyChecking=yes"
+          echo "SCP_OPTS=$SCP_OPTS" >> "$GITHUB_ENV"
 
       - name: Доставка исходников на VPS (rsync)
         run: |
@@ -76,7 +79,7 @@ jobs:
 
       - name: Обновление compose-файла на VPS
         run: |
-          scp $SSH_OPTS deploy/docker-compose.prod.yml \
+          scp $SCP_OPTS deploy/docker-compose.prod.yml \
             "$VPS_USER@$VPS_HOST:~/kinobot/docker-compose.prod.yml"
 
       - name: Запуск контейнеров
