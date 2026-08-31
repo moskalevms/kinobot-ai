@@ -1,4 +1,5 @@
 # src/telegram_bot.py
+import html
 import os
 import logging
 from telegram import (
@@ -19,6 +20,7 @@ from session_manager import SessionManager
 from dialogue_manager import DialogueManager
 from statistics_tracker import track_client_request
 from config import CURRENT_YEAR
+from guardrails import sanitize_message
 import aiohttp
 
 load_dotenv()
@@ -57,7 +59,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• Запоминать контекст разговора\n"
         "• Уточнять рекомендации\n"
         "Просто напишите, что хотите посмотреть! 🍿\n"
-        "Или используйте меню ниже 👇"
+        "Или используйте меню ниже 👇\n"
+        "⚠️ Я работаю только с темой кино и сериалов: "
+        "запросы на другие темы не обрабатываются."
     )
     await update.message.reply_text(
         welcome_text,
@@ -81,7 +85,8 @@ async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• <i>Уточнения:</i>\n"
         "  «другие варианты», «похожие фильмы»\n"
         "  «нет, это не то»\n"
-        "Я запоминаю контекст нашего разговора! 🧠"
+        "Я запоминаю контекст нашего разговора! 🧠\n"
+        "⚠️ Отвечаю только на запросы о фильмах и сериалах."
     )
     await update.message.reply_text(help_text, parse_mode='HTML')
 
@@ -128,11 +133,13 @@ async def _process_and_reply(update: Update, context: ContextTypes.DEFAULT_TYPE,
         )
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_message = update.message.text.strip()
+    user_message = sanitize_message(update.message.text or "")
     user_id = str(update.effective_user.id)
     if not user_message:
         await update.message.reply_text("Пожалуйста, введите запрос.")
         return
+    # Лимит длины проверяется централизованно в dialogue_manager
+    # (guardrails.precheck_message) — действует и для бота, и для веба
     logger.info(f"Сообщение от {user_id}: {user_message}")
 
     if user_message == "🎭 Фильм по настроению":
@@ -230,7 +237,12 @@ async def handle_movie_detail(update: Update, context: ContextTypes.DEFAULT_TYPE
                             'description': (raw.get('description') or '')[:500],
                             'poster_url': poster_url
                         }
-                        desc = f"🎬 <strong>{movie['title']}</strong> ({movie['year']}) — {movie['genre']} с рейтингом {movie['rating']}.\n{movie['description']}"
+                        desc = (
+                            f"🎬 <strong>{html.escape(str(movie['title']))}</strong> "
+                            f"({html.escape(str(movie['year']))}) — {html.escape(str(movie['genre']))} "
+                            f"с рейтингом {html.escape(str(movie['rating']))}.\n"
+                            f"{html.escape(str(movie['description']))}"
+                        )
                         await query.message.reply_text(desc, parse_mode='HTML')
                         if poster_url:
                             try:

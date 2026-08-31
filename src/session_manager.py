@@ -73,20 +73,19 @@ class SessionManager:
             logger.debug(f"{message}: {e}")
 
     def get_session(self, user_id: str) -> UserSession:
-        """Получить сессию пользователя, создать если не существует"""
+        """Получить сессию пользователя.
+
+        Чтение не пишет в БД (ни коммита, ни обновления активности):
+        строка сессии создаётся и обновляется только в save_session.
+        Если записи ещё нет, возвращается новая сессия в памяти.
+        """
         self._maybe_cleanup()
         try:
-            from models.database import db, DialogueSession
+            from models.database import DialogueSession
             with self._app.app_context():
                 row = DialogueSession.query.filter_by(user_id=user_id).first()
                 if row is None:
-                    row = DialogueSession(user_id=user_id)
-                    db.session.add(row)
-                    db.session.commit()
-                    logger.info(f"Создана новая сессия для пользователя {user_id}")
-                else:
-                    row.last_activity = datetime.utcnow()
-                    db.session.commit()
+                    return UserSession(user_id=user_id)
                 return UserSession(
                     user_id=user_id,
                     last_movies=row.last_movies or [],

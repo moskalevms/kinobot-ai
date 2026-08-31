@@ -1,7 +1,10 @@
 # src/llm_router.py
 import os
+import logging
 from typing import Optional, List, Dict
 from gigachat_client import GigaChatClient
+
+logger = logging.getLogger(__name__)
 
 
 class LLMRouter:
@@ -15,11 +18,11 @@ class LLMRouter:
                     "client": GigaChatClient(),
                     "type": "gigachat"
                 })
-                print("[LLM] ✅ GigaChat добавлен")
+                logger.info("[LLM] ✅ GigaChat добавлен")
             except Exception as e:
-                print(f"[LLM] ❌ Ошибка при инициализации GigaChat: {e}")
+                logger.error(f"[LLM] ❌ Ошибка при инициализации GigaChat: {e}")
         else:
-            print("[LLM] ⚠️ GIGACHAT_AUTH_KEY не указан — GigaChat отключен")
+            logger.warning("[LLM] ⚠️ GIGACHAT_AUTH_KEY не указан — GigaChat отключен")
 
         enable_deepseek = os.getenv("ENABLE_DEEPSEEK", "false").lower() == "true"
         if enable_deepseek:
@@ -33,11 +36,11 @@ class LLMRouter:
                         "client": AsyncOpenAI(api_key=deepseek_key, base_url=deepseek_base),
                         "type": "openai"
                     })
-                    print("[LLM] ✅ DeepSeek добавлен")
+                    logger.info("[LLM] ✅ DeepSeek добавлен")
                 except ImportError:
-                    print("[LLM] ❌ Модуль openai не установлен — DeepSeek недоступен")
+                    logger.error("[LLM] ❌ Модуль openai не установлен — DeepSeek недоступен")
             else:
-                print("[LLM] ⚠️ DEEPSEEK_API_KEY не указан")
+                logger.warning("[LLM] ⚠️ DEEPSEEK_API_KEY не указан")
 
         if not self.models:
             raise ValueError("Не указаны ключи API для LLM")
@@ -45,7 +48,7 @@ class LLMRouter:
     async def call_llm(self, session, messages: List[Dict[str, str]], max_tokens: int = 500) -> Optional[str]:
         for model in self.models:
             try:
-                print(f"[LLM] Пробуем {model['name']}...")
+                logger.info(f"[LLM] Пробуем {model['name']}...")
                 if model["type"] == "gigachat":
                     result = await model["client"].chat_completions_create(
                         session=session,
@@ -63,10 +66,10 @@ class LLMRouter:
                         timeout=30
                     )
                     result = response.choices[0].message.content.strip()
-                print(f"[LLM] ✅ Успешный ответ от {model['name']}")
+                logger.info(f"[LLM] ✅ Успешный ответ от {model['name']}")
                 return result
             except Exception as e:
-                print(f"[LLM] ❌ {model['name']} недоступен: {e}")
+                logger.warning(f"[LLM] ❌ {model['name']} недоступен: {e}")
                 continue
-        print("[LLM] ❌ Все LLM недоступны")
+        logger.error("[LLM] ❌ Все LLM недоступны")
         return None

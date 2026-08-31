@@ -5,6 +5,8 @@ from logging.handlers import RotatingFileHandler
 import glob
 from datetime import datetime, timedelta
 
+logger = logging.getLogger(__name__)
+
 LOG_DIR = os.getenv("LOG_DIR", "logs")
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 МБ
 MAX_DAYS = 4
@@ -61,6 +63,6 @@ def cleanup_old_logs(log_dir: str):
             file_time = datetime.fromtimestamp(os.path.getctime(file_path))
             if file_time < cutoff:
                 os.remove(file_path)
-                print(f"Удалён старый лог-файл: {file_path}")
+                logger.info(f"Удалён старый лог-файл: {file_path}")
         except Exception as e:
-            print(f"Ошибка при удалении лога {file_path}: {e}")
+            logger.warning(f"Ошибка при удалении лога {file_path}: {e}")

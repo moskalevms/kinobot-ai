@@ -2,6 +2,7 @@ import asyncio
 from unittest.mock import AsyncMock
 
 from dialogue_manager import DialogueManager
+from guardrails import MESSAGE_MAX_LENGTH, REFUSAL_TOO_LONG
 from session_manager import UserSession
 
 
@@ -104,3 +105,15 @@ def test_info_request_returns_movie_card():
     assert result['needs_clarification'] is False
     assert result['movie'] == movie
     assert 'Начало' in result['response']
+
+
+def test_too_long_message_refused_without_llm():
+    dm = _manager()
+    dm.intent_classifier.classify_with_llm = AsyncMock()
+    long_message = 'а' * (MESSAGE_MAX_LENGTH + 1)
+
+    result = _run(dm.process_message(None, 'u1', long_message))
+
+    assert result['response'] == REFUSAL_TOO_LONG
+    assert result['needs_clarification'] is False
+    dm.intent_classifier.classify_with_llm.assert_not_called()

@@ -1,4 +1,6 @@
 ﻿# src/dialogue_manager.py
+import asyncio
+import html
 import os
 import logging
 
@@ -8,6 +10,13 @@ from session_manager import SessionManager, UserSession
 from intent_classifier import IntentClassifier
 from llm_router import LLMRouter
 from config import CURRENT_YEAR
+from guardrails import (
+    OFFTOPIC_INTENT,
+    get_refusal_text,
+    log_blocked,
+    precheck_message,
+    sanitize_message,
+)
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 logger = logging.getLogger(__name__)
@@ -47,7 +56,17 @@ class DialogueManager:
 
     async def process_message(self, http_session, user_id: str, message: str) -> Dict[str, Any]:
         try:
-            session = self.session_manager.get_session(user_id)
+            message = sanitize_message(message)
+            block_reason = precheck_message(message)
+            if block_reason is not None:
+                log_blocked(user_id, block_reason, message)
+                return {
+                    "response": get_refusal_text(block_reason),
+                    "needs_clarification": False
+                }
+
+            # Синхронные обращения к БД уводим из event loop в поток
+            session = await asyncio.to_thread(self.session_manager.get_session, user_id)
             intent_params = await self.intent_classifier.classify_with_llm(
                 http_session,
                 message,
@@ -56,7 +75,13 @@ class DialogueManager:
             intent = intent_params.get("intent", "initial")
             logger.info(f"Обработка запроса: intent={intent}, user_id={user_id}")
 
-            if intent == "info":
+            if intent == OFFTOPIC_INTENT:
+                log_blocked(user_id, "llm_offtopic", message)
+                return {
+                    "response": get_refusal_text("offtopic"),
+                    "needs_clarification": False
+                }
+            elif intent == "info":
                 result = await self._handle_info_request(http_session, message, intent_params, session)
             elif intent == "similar":
                 result = await self._handle_similar_request(http_session, message, intent_params, session)
@@ -66,7 +91,7 @@ class DialogueManager:
                 result = await self._handle_general_request(http_session, message, intent_params, session)
 
             self._update_session(session, result)
-            self.session_manager.save_session(session)
+            await asyncio.to_thread(self.session_manager.save_session, session)
             return result
         except Exception as e:
             logger.error(f"Ошибка обработки сообщения: {e}", exc_info=True)
@@ -504,13 +529,13 @@ class DialogueManager:
 
     def _generate_list_response(self, movies: List[Dict], header: str, limit: int = 8) -> tuple[
         str, InlineKeyboardMarkup]:
-        response = f"<strong>{header}</strong>\n"
+        response = f"<strong>{html.escape(str(header))}</strong>\n"
         buttons = []
         for i, movie in enumerate(movies[:limit], 1):
             title = movie.get('title', '—')
             year = movie.get('year', '')
             rating = movie.get('rating', '—')
-            response += f"{i}. <strong>{title}</strong> ({year}) — ⭐ {rating}\n"
+            response += f"{i}. <strong>{html.escape(str(title))}</strong> ({html.escape(str(year))}) — ⭐ {html.escape(str(rating))}\n"
             movie_id = movie.get('id') or 0
             callback_data = f"info:{movie_id}"
             buttons.append([InlineKeyboardButton(f"Подробнее: {title}", callback_data=callback_data)])
@@ -518,11 +543,11 @@ class DialogueManager:
         return response, keyboard
 
     def _generate_single_movie_response(self, movie: Dict) -> str:
-        title = movie.get('title', '—')
-        year = movie.get('year', '')
-        genre = movie.get('genre', '—')
-        rating = movie.get('rating', '—')
-        description = movie.get('description', '')
+        title = html.escape(str(movie.get('title', '—')))
+        year = html.escape(str(movie.get('year', '')))
+        genre = html.escape(str(movie.get('genre', '—')))
+        rating = html.escape(str(movie.get('rating', '—')))
+        description = html.escape(str(movie.get('description', '')))
         return f"🎬 <strong>{title}</strong> ({year}) — {genre} с рейтингом {rating}.\n{description}"
 
     def _update_session(self, session: UserSession, result: Dict):

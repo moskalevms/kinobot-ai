@@ -4,20 +4,43 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# Жанры, исключаемые из выдачи по умолчанию. Единый перечень для всех
+# контуров фильтрации; если пользователь явно запрашивает такой жанр,
+# он передаётся в allowed_excluded_genres.
+EXCLUDED_GENRES = {
+    'мюзикл', 'концерт', 'документальный', 'документалка',
+    'короткометражка', 'короткометражный', 'биография',
+    'артхаус', 'реалити-тв', 'ток-шоу', 'церемония',
+    'эротика', 'для взрослых', 'adult', '18+', 'спорт', 'спортивный',
+    'новости', 'новостной',
+}
+
+
+# Страны с приоритетной выдачей (англоязычные)
+HIGH_PRIORITY_COUNTRIES = {
+    'сша', 'usa', 'united states', 'канада', 'canada',
+    'великобритания', 'uk', 'united kingdom',
+}
+
 
 def get_country_priority(movie: Dict) -> int:
+    """Приоритет фильма по странам производства.
+
+    0 — все страны входят в приоритетный перечень;
+    1 — копродукция: приоритетные страны есть, но не все;
+    2 — приоритетных стран нет (включая фильм без стран).
+    """
     countries = movie.get('countries', [])
     if not countries:
         return 2
 
     country_names = {c.get('name', '').lower() for c in countries if isinstance(c, dict)}
-    high_priority = {'сша', 'usa', 'united states', 'канада', 'canada', 'великобритания', 'uk', 'united kingdom'}
-    if any(c in high_priority for c in country_names):
-        return 0
-    elif len(country_names) > 1 and any(c in high_priority for c in country_names):
-        return 1
-    else:
+    matches = country_names & HIGH_PRIORITY_COUNTRIES
+    if not matches:
         return 2
+    if matches == country_names:
+        return 0
+    return 1
 
 
 def is_russian_content(movie: Dict) -> bool:
@@ -55,18 +78,10 @@ def should_exclude_by_genre(movie: Dict, allowed_excluded_genres: Optional[Set[s
     if allowed_excluded_genres is None:
         allowed_excluded_genres = set()
 
-    excluded_genres = {
-        'мюзикл', 'концерт', 'документальный', 'документалка',
-        'короткометражка', 'короткометражный', 'биография',
-        'артхаус', 'реалити-тв', 'ток-шоу', 'церемония',
-        'эротика', 'для взрослых', 'adult', '18+', 'спорт', 'спортивный',
-        'новости', 'новостной'  # ← добавлены новости
-    }
-
     genres = movie.get('genres', [])
     genre_names = {g.get('name', '').lower() for g in genres if isinstance(g, dict)}
 
-    found_excluded = genre_names & excluded_genres
+    found_excluded = genre_names & EXCLUDED_GENRES
     if found_excluded and not (genre_names & allowed_excluded_genres):
         return True
 

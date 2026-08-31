@@ -6,6 +6,12 @@ import os
 from typing import Dict, Any
 
 from llm_router import LLMRouter
+from guardrails import (
+    OFFTOPIC_INTENT,
+    build_user_content,
+    precheck_message,
+    validate_classifier_output,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +44,7 @@ class IntentClassifier:
                 return self._classify_fallback(message)
             messages = [
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": message}
+                {"role": "user", "content": build_user_content(message)},
             ]
 
             response = await self.llm_router.call_llm(session, messages, max_tokens=250)
@@ -52,40 +58,16 @@ class IntentClassifier:
                 return self._classify_fallback(message)
 
             json_str = json_match.group(0)
-            params = json.loads(json_str)
-
-            # Приведение movie_type (если LLM вернул строку)
-            if params.get("movie_type") not in ["movie", "tv-series"]:
-                params["movie_type"] = "movie"  # fallback
-
-            # Приведение типов и улучшенная обработка годов
-            if params.get("count") is not None:
-                try:
-                    params["count"] = int(params["count"])
-                except (TypeError, ValueError):
-                    params["count"] = None
+            params = validate_classifier_output(json.loads(json_str))
 
             # Обработка года с учетом десятилетий
-            year = params.get("year")
-            if year is None:
+            if params.get("year") is None:
                 # Пытаемся извлечь десятилетие из сообщения
                 decade_match = re.search(r'(\d{3})0-х', message)
                 if decade_match:
                     decade = int(decade_match.group(1) + "0")
                     params["year"] = decade
                     logger.info(f"Извлечено десятилетие: {decade}0-е")
-
-            if params.get("year") is not None:
-                try:
-                    params["year"] = int(params["year"])
-                except (TypeError, ValueError):
-                    params["year"] = None
-
-            if params.get("min_rating") is not None:
-                try:
-                    params["min_rating"] = float(params["min_rating"])
-                except (TypeError, ValueError):
-                    params["min_rating"] = None
 
             logger.info(f"LLM классификация успешна: {params}")
             return params
@@ -98,6 +80,13 @@ class IntentClassifier:
         """Упрощенная классификация с поддержкой явных диапазонов лет (например, 2024-2025)"""
         message_lower = message.lower()
         params = self._get_default_params()
+
+        # === 0. Отсечение офтопика и атак на промпит без LLM ===
+        block_reason = precheck_message(message)
+        if block_reason is not None:
+            params["intent"] = OFFTOPIC_INTENT
+            logger.info(f"Fallback классификация: запрос вне темы кино ({block_reason})")
+            return params
 
         # === 1. Обработка явного диапазона лет: "2024-2025", "1995–2000" и т.п. ===
         year_range_match = re.search(r'(\d{4})\s*[-–—]\s*(\d{4})', message_lower)

@@ -13,6 +13,7 @@ select = ["E", "F", "W"]
 # настройки sys.path / load_dotenv (плоская модель импортов проекта)
 [tool.ruff.lint.per-file-ignores]
 "init_db.py" = ["E402"]
+"scripts/cleanup_stats.py" = ["E402"]
 "src/app.py" = ["E402"]
 "src/telegram_bot.py" = ["E402"]
 

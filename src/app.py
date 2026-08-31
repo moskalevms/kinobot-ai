@@ -41,6 +41,10 @@ if not _secret_key:
     )
 app.secret_key = _secret_key
 
+# CSRF-защита всех форм (включая админку)
+from flask_wtf.csrf import CSRFProtect
+csrf = CSRFProtect(app)
+
 # Настройка БД
 app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv(
     'DATABASE_URL',
@@ -110,7 +114,10 @@ async def _process_chat_async(user_id: str, user_message: str) -> dict:
         return result
 
 
+# JSON-эндпоинты чата не выполняют привилегированных действий,
+# поэтому освобождены от CSRF-токена (см. openspec: fix-review-2026-08-30)
 @app.route('/chat', methods=['POST'])
+@csrf.exempt
 def chat():
     try:
         data = request.get_json()
@@ -142,6 +149,7 @@ def chat():
 
 
 @app.route('/new-chat', methods=['POST'])
+@csrf.exempt
 def new_chat():
     try:
         user_id = session['user_id']
@@ -188,4 +196,7 @@ if __name__ == '__main__':
     logger.info("Запуск Flask приложения...")
     if FLASK_ENV != 'production':
         logging.basicConfig(level=logging.DEBUG)
-    app.run(debug=(FLASK_ENV != 'production'), host='0.0.0.0', port=5000)
+    # Встроенный сервер — только для разработки: без отладчика
+    # (защита от RCE через Werkzeug-консоль) и только на 127.0.0.1.
+    # Для продакшена используйте gunicorn.
+    app.run(host='127.0.0.1', port=5000)

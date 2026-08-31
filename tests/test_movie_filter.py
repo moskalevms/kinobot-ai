@@ -1,5 +1,6 @@
 from utils.movie_filter import (
     filter_movies_by_quality,
+    get_country_priority,
     get_weighted_rating,
     is_russian_content,
     should_exclude_by_genre,
@@ -72,4 +73,40 @@ def test_filter_sorts_by_weighted_rating():
     mid = _movie('Средний', ['драма'], ['США'], imdb=7.0, imdb_votes=100000)
     top = _movie('Топ', ['драма'], ['США'], imdb=9.0, imdb_votes=100000)
     result = filter_movies_by_quality([mid, top], min_rating=6.0)
+    assert [m['name'] for m in result] == ['Топ', 'Средний']
+
+
+def test_country_priority_all_priority_countries():
+    assert get_country_priority(_movie('Фильм', [], ['США'])) == 0
+    assert get_country_priority(_movie('Фильм', [], ['США', 'Канада'])) == 0
+
+
+def test_country_priority_coproduction():
+    assert get_country_priority(_movie('Фильм', [], ['США', 'Франция'])) == 1
+
+
+def test_country_priority_no_priority_countries():
+    assert get_country_priority(_movie('Фильм', [], ['Франция', 'Германия'])) == 2
+
+
+def test_country_priority_no_countries():
+    assert get_country_priority(_movie('Фильм', [], [])) == 2
+
+
+def test_filter_prioritizes_priority_countries_over_rating():
+    pure = _movie('Чистый США', ['драма'], ['США'], imdb=7.0, imdb_votes=100000)
+    co = _movie('Копродукция', ['драма'], ['США', 'Франция'], imdb=9.0, imdb_votes=100000)
+    other = _movie('Без приоритета', ['драма'], ['Франция'], imdb=8.5, imdb_votes=100000)
+    result = filter_movies_by_quality(
+        [other, co, pure], min_rating=6.0, prioritize_english_speaking=True
+    )
+    assert [m['name'] for m in result] == ['Чистый США', 'Копродукция', 'Без приоритета']
+
+
+def test_filter_within_priority_level_sorts_by_rating():
+    top = _movie('Топ', ['драма'], ['США'], imdb=9.0, imdb_votes=100000)
+    mid = _movie('Средний', ['драма'], ['США'], imdb=7.0, imdb_votes=100000)
+    result = filter_movies_by_quality(
+        [mid, top], min_rating=6.0, prioritize_english_speaking=True
+    )
     assert [m['name'] for m in result] == ['Топ', 'Средний']

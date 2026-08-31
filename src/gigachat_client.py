@@ -1,6 +1,7 @@
 # src/gigachat_client.py
 import os
 import ssl
+import uuid
 import aiohttp
 import logging
 import asyncio
@@ -43,7 +44,7 @@ class GigaChatClient:
         if self.access_token and time() < self.token_expires_at:
             return self.access_token
         headers = {
-            'RqUID': str(__import__('uuid').uuid4()),
+            'RqUID': str(uuid.uuid4()),
             'Content-Type': 'application/x-www-form-urlencoded',
             'Accept': 'application/json',
             'Authorization': f'Basic {self.auth_key}'
