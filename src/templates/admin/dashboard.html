@@ -52,6 +52,17 @@
                     <h1 class="h2">Статистика пользователей</h1>
                 </div>
 
+                <div class="card bg-light border mb-4">
+                    <div class="card-body py-2">
+                        <i class="fab fa-telegram"></i> Текущий Telegram-бот:
+                        {% if current_bot %}
+                        <strong>@{{ current_bot.username }}</strong> ({{ current_bot.first_name }})
+                        {% else %}
+                        <strong>н/д</strong>
+                        {% endif %}
+                    </div>
+                </div>
+
                 <div class="row mb-4">
                     <div class="col-md-3">
                         <div class="card text-white bg-primary">

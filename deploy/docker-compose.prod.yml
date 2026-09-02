@@ -38,6 +38,28 @@ services:
     environment:
       DATABASE_URL: postgresql://${DB_USER:-postgres}:${DB_PASSWORD:-postgres}@postgres:5432/${DB_NAME:-kinobot_db}
 
+  # Веб-интерфейс и админ-панель: тот же образ, отдельный контейнер.
+  # Один воркер — осознанно: сессии и кэш in-memory и не разделяются
+  # между воркерами.
+  kinobot-web:
+    image: kinobot-ai:${APP_VERSION}
+    container_name: kinobot-web
+    command: gunicorn --bind 0.0.0.0:5000 --workers 1 --chdir src app:app
+    ports:
+      - "5000:5000"
+    restart: unless-stopped
+    env_file:
+      - .env.production
+    volumes:
+      - app_logs:/app/logs
+    networks:
+      - kinobot-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${DB_USER:-postgres}:${DB_PASSWORD:-postgres}@postgres:5432/${DB_NAME:-kinobot_db}
+
 networks:
   kinobot-network:
     driver: bridge

@@ -5,6 +5,7 @@ from flask_login import login_user, logout_user, login_required, current_user
 from functools import wraps
 from datetime import datetime, timedelta, date
 from models.database import db, User, UserStatistics
+from bot_identity import get_current_bot
 
 admin_bp = Blueprint('admin', __name__)
 
@@ -86,7 +87,8 @@ def dashboard():
                            month_queries=month_queries,
                            total_unique=total_unique,
                            total_queries=total_queries,
-                           daily_stats=daily_stats)
+                           daily_stats=daily_stats,
+                           current_bot=get_current_bot())
 
 
 @admin_bp.route('/statistics')

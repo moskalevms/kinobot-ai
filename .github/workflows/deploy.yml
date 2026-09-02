@@ -31,9 +31,10 @@ jobs:
       - name: Проверка секретов (до обращения к VPS)
         env:
           VPS_SSH_PRIVATE_KEY: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
+          ENV_PRODUCTION: ${{ secrets.ENV_PRODUCTION }}
         run: |
-          if [ -z "$VPS_HOST" ] || [ -z "$VPS_USER" ] || [ -z "$VPS_PORT" ] || [ -z "$VPS_SSH_PRIVATE_KEY" ]; then
-            echo "::error::Не заданы секреты деплоя (VPS_SSH_PRIVATE_KEY, VPS_HOST, VPS_USER, VPS_PORT)"
+          if [ -z "$VPS_HOST" ] || [ -z "$VPS_USER" ] || [ -z "$VPS_PORT" ] || [ -z "$VPS_SSH_PRIVATE_KEY" ] || [ -z "$ENV_PRODUCTION" ]; then
+            echo "::error::Не заданы секреты деплоя (VPS_SSH_PRIVATE_KEY, VPS_HOST, VPS_USER, VPS_PORT, ENV_PRODUCTION)"
             exit 1
           fi
           echo "Тег деплоя: $DEPLOY_TAG"
@@ -82,6 +83,13 @@ jobs:
           scp $SCP_OPTS deploy/docker-compose.prod.yml \
             "$VPS_USER@$VPS_HOST:~/kinobot/docker-compose.prod.yml"
 
+      - name: Запись .env.production на VPS
+        env:
+          ENV_PRODUCTION: ${{ secrets.ENV_PRODUCTION }}
+        run: |
+          printf '%s\n' "$ENV_PRODUCTION" | ssh $SSH_OPTS "$VPS_USER@$VPS_HOST" \
+            "cat > ~/kinobot/.env.production && chmod 600 ~/kinobot/.env.production"
+
       - name: Запуск контейнеров
         run: |
           ssh $SSH_OPTS "$VPS_USER@$VPS_HOST" \
@@ -92,17 +100,30 @@ jobs:
         run: |
           echo "Ожидание 30 секунд после старта..."
           sleep 30
-          STATE=$(ssh $SSH_OPTS "$VPS_USER@$VPS_HOST" \
-            "docker inspect -f '{{.State.Status}}' kinobot" || echo "missing")
-          RESTARTS=$(ssh $SSH_OPTS "$VPS_USER@$VPS_HOST" \
-            "docker inspect -f '{{.RestartCount}}' kinobot" || echo "-1")
-          echo "Статус контейнера: $STATE, перезапусков: $RESTARTS"
-          if [ "$STATE" != "running" ] || [ "$RESTARTS" != "0" ]; then
-            echo "::error::Контейнер kinobot не работает (статус: $STATE, перезапусков: $RESTARTS)"
-            ssh $SSH_OPTS "$VPS_USER@$VPS_HOST" "docker logs --tail 50 kinobot" || true
+          FAIL=0
+          for c in kinobot kinobot-web; do
+            STATE=$(ssh $SSH_OPTS "$VPS_USER@$VPS_HOST" \
+              "docker inspect -f '{{.State.Status}}' $c" || echo "missing")
+            RESTARTS=$(ssh $SSH_OPTS "$VPS_USER@$VPS_HOST" \
+              "docker inspect -f '{{.RestartCount}}' $c" || echo "-1")
+            echo "Контейнер $c — статус: $STATE, перезапусков: $RESTARTS"
+            if [ "$STATE" != "running" ] || [ "$RESTARTS" != "0" ]; then
+              echo "::error::Контейнер $c не работает (статус: $STATE, перезапусков: $RESTARTS)"
+              ssh $SSH_OPTS "$VPS_USER@$VPS_HOST" "docker logs --tail 50 $c" || true
+              FAIL=1
+            fi
+          done
+          HTTP_CODE=$(ssh $SSH_OPTS "$VPS_USER@$VPS_HOST" \
+            "curl -s -o /dev/null -w '%{http_code}' --max-time 10 http://127.0.0.1:5000/health" || echo "000")
+          echo "Код ответа /health: $HTTP_CODE"
+          if [ "$HTTP_CODE" != "200" ] && [ "$HTTP_CODE" != "503" ]; then
+            echo "::error::Веб-приложение не отвечает на /health (код: $HTTP_CODE)"
+            FAIL=1
+          fi
+          if [ "$FAIL" != "0" ]; then
             exit 1
           fi
-          echo "Деплой успешен: контейнер работает без перезапусков."
+          echo "Деплой успешен: контейнеры работают без перезапусков, веб-приложение отвечает."
 
       - name: Очистка неиспользуемых образов
         if: always()
