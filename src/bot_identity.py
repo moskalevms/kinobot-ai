@@ -10,7 +10,8 @@ logger = logging.getLogger(__name__)
 # Кэш результата (в т.ч. ошибок) — чтобы не запрашивать API
 # при каждом открытии дашборда
 _CACHE_TTL_SECONDS = 15 * 60
-_cache = {"value": None, "expires_at": 0.0}
+_cached_bot: dict | None = None
+_cache_expires_at: float = 0.0
 
 
 def _fetch_bot_info() -> dict | None:
@@ -37,8 +38,9 @@ def _fetch_bot_info() -> dict | None:
 
 def get_current_bot() -> dict | None:
     """Текущий подключённый бот: {'username', 'first_name'} либо None."""
+    global _cached_bot, _cache_expires_at
     now = time.monotonic()
-    if now >= _cache["expires_at"]:
-        _cache["value"] = _fetch_bot_info()
-        _cache["expires_at"] = now + _CACHE_TTL_SECONDS
-    return _cache["value"]
+    if now >= _cache_expires_at:
+        _cached_bot = _fetch_bot_info()
+        _cache_expires_at = now + _CACHE_TTL_SECONDS
+    return _cached_bot
