@@ -7,6 +7,11 @@ from utils.movie_filter import (
     filter_movies_by_quality,
     is_russian_content,
 )
+
+# Синонимы стендапа в запросах. Отдельного жанра «стендап» у Кинопоиска
+# нет, поэтому при явном запросе поиск идёт по «комедии», а псевдожанр
+# «стендап» в allowed_excluded_genres снимает исключение стендапов.
+STANDUP_SYNONYMS = ('стендап', 'стенд-ап', 'стенд ап', 'stand-up', 'standup')
 from kinopoisk_client import KinopoiskClient
 logger = logging.getLogger(__name__)
 
@@ -36,6 +41,9 @@ class RecommendationEngine:
             allowed_excluded_genres.add(genre_name.lower())
         if genre_name and genre_name.lower() in MUSIC_ONLY_GENRES:
             allowed_excluded_genres.add(genre_name.lower())
+        if genre_name and genre_name.lower() in STANDUP_SYNONYMS:
+            allowed_excluded_genres.add('стендап')
+            genre_name = 'комедия'
         if query:
             query_lower = query.lower()
             for excluded_genre in EXCLUDED_GENRES:
@@ -43,6 +51,8 @@ class RecommendationEngine:
                     allowed_excluded_genres.add(excluded_genre)
             if 'музык' in query_lower:
                 allowed_excluded_genres.add('музыка')
+            if any(synonym in query_lower for synonym in STANDUP_SYNONYMS):
+                allowed_excluded_genres.add('стендап')
             if genre_name and genre_name.lower() in ['анимация', 'мультфильм']:
                 if 'аниме' in (query or '').lower():
                     genre_name = 'аниме'

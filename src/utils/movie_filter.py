@@ -23,6 +23,23 @@ EXCLUDED_GENRES = {
 # концертным/музыкальным контентом и исключается по умолчанию.
 MUSIC_ONLY_GENRES = {'музыка', 'концерт', 'мюзикл'}
 
+# Стендап-выступления. Кинопоиск не выделяет стендап в отдельный жанр:
+# такие тайтлы помечаются «комедией» (иногда в сочетании с «музыкой»),
+# поэтому детекция опирается на жанры + маркеры в названии/описании
+# («стендап», «выступление комика, записанное в...»). Тайтлы с жанром
+# «документальный» сюда не относятся — их отсеивает список
+# исключаемых жанров.
+STANDUP_CONTENT_GENRES = {'комедия', 'музыка'}
+
+# Явные упоминания стендапа в названии/описании
+STANDUP_EXPLICIT_MARKERS = (
+    'стендап', 'стенд-ап', 'стенд ап', 'stand-up', 'standup', 'stand up',
+)
+# Маркеры описания записанного выступления
+STANDUP_PERFORMANCE_MARKERS = ('выступлен', 'концерт')
+# Маркеры комика/записи/сцены — в сочетании с маркером выступления
+STANDUP_COMPANION_MARKERS = ('комик', 'записан', 'записыв', 'сцене', 'сцену')
+
 
 # Страны с приоритетной выдачей (англоязычные)
 HIGH_PRIORITY_COUNTRIES = {
@@ -90,6 +107,28 @@ def is_music_only_content(movie: Dict) -> bool:
     return bool(genre_names) and genre_names <= MUSIC_ONLY_GENRES
 
 
+def is_standup_content(movie: Dict) -> bool:
+    """Стендап-выступление: жанры только комедийные + маркеры
+    записанного выступления комика в названии/описании."""
+    genres = movie.get('genres', [])
+    genre_names = {g.get('name', '').lower() for g in genres if isinstance(g, dict)}
+    genre_names.discard('')
+    if not genre_names or not genre_names <= STANDUP_CONTENT_GENRES:
+        return False
+
+    text = ' '.join([
+        str(movie.get('name') or ''),
+        str(movie.get('description') or ''),
+    ]).lower()
+
+    if any(marker in text for marker in STANDUP_EXPLICIT_MARKERS):
+        return True
+
+    has_performance = any(marker in text for marker in STANDUP_PERFORMANCE_MARKERS)
+    has_companion = any(marker in text for marker in STANDUP_COMPANION_MARKERS)
+    return has_performance and has_companion
+
+
 def should_exclude_by_genre(movie: Dict, allowed_excluded_genres: Optional[Set[str]] = None) -> bool:
     if allowed_excluded_genres is None:
         allowed_excluded_genres = set()
@@ -105,6 +144,9 @@ def should_exclude_by_genre(movie: Dict, allowed_excluded_genres: Optional[Set[s
         return True
 
     if is_music_only_content(movie) and not allowed_match:
+        return True
+
+    if is_standup_content(movie) and 'стендап' not in allowed_excluded_genres:
         return True
 
     return False
