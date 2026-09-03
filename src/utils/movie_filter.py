@@ -15,6 +15,14 @@ EXCLUDED_GENRES = {
     'новости', 'новостной',
 }
 
+# Жанры «музыкального» контента. Кинопоиск часто помечает концерты,
+# лайв-выступления и музыкальные документалки только жанром «музыка»
+# (например, «Metallica: Live Shit», «Режиссёр Мишель Гондри в работе»),
+# поэтому по жанрам «концерт»/«документальный» они не отсеиваются.
+# Тайтл, у которого ВСЕ жанры входят в этот набор, считается
+# концертным/музыкальным контентом и исключается по умолчанию.
+MUSIC_ONLY_GENRES = {'музыка', 'концерт', 'мюзикл'}
+
 
 # Страны с приоритетной выдачей (англоязычные)
 HIGH_PRIORITY_COUNTRIES = {
@@ -74,15 +82,29 @@ def get_weighted_rating(movie: Dict, is_russian_search: bool = False) -> float:
             return 0.0
 
 
+def is_music_only_content(movie: Dict) -> bool:
+    """Тайтл, у которого все жанры музыкальные (концерт/лайв/муз. документалка)."""
+    genres = movie.get('genres', [])
+    genre_names = {g.get('name', '').lower() for g in genres if isinstance(g, dict)}
+    genre_names.discard('')
+    return bool(genre_names) and genre_names <= MUSIC_ONLY_GENRES
+
+
 def should_exclude_by_genre(movie: Dict, allowed_excluded_genres: Optional[Set[str]] = None) -> bool:
     if allowed_excluded_genres is None:
         allowed_excluded_genres = set()
 
     genres = movie.get('genres', [])
     genre_names = {g.get('name', '').lower() for g in genres if isinstance(g, dict)}
+    genre_names.discard('')
+
+    allowed_match = genre_names & allowed_excluded_genres
 
     found_excluded = genre_names & EXCLUDED_GENRES
-    if found_excluded and not (genre_names & allowed_excluded_genres):
+    if found_excluded and not allowed_match:
+        return True
+
+    if is_music_only_content(movie) and not allowed_match:
         return True
 
     return False

@@ -1,7 +1,12 @@
 # src/recommendation_engine.py
 import logging
 from typing import List, Dict, Optional, Tuple, Set
-from utils.movie_filter import EXCLUDED_GENRES, filter_movies_by_quality, is_russian_content
+from utils.movie_filter import (
+    EXCLUDED_GENRES,
+    MUSIC_ONLY_GENRES,
+    filter_movies_by_quality,
+    is_russian_content,
+)
 from kinopoisk_client import KinopoiskClient
 logger = logging.getLogger(__name__)
 
@@ -29,11 +34,15 @@ class RecommendationEngine:
         is_russian_search = bool(country and country.lower() in ['россия', 'russia', 'российская федерация'])
         if genre_name and genre_name.lower() in EXCLUDED_GENRES:
             allowed_excluded_genres.add(genre_name.lower())
+        if genre_name and genre_name.lower() in MUSIC_ONLY_GENRES:
+            allowed_excluded_genres.add(genre_name.lower())
         if query:
             query_lower = query.lower()
             for excluded_genre in EXCLUDED_GENRES:
                 if excluded_genre in query_lower:
                     allowed_excluded_genres.add(excluded_genre)
+            if 'музык' in query_lower:
+                allowed_excluded_genres.add('музыка')
             if genre_name and genre_name.lower() in ['анимация', 'мультфильм']:
                 if 'аниме' in (query or '').lower():
                     genre_name = 'аниме'
