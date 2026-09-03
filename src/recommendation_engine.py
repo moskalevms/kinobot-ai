@@ -7,13 +7,14 @@ from utils.movie_filter import (
     filter_movies_by_quality,
     is_russian_content,
 )
+from kinopoisk_client import KinopoiskClient
+
+logger = logging.getLogger(__name__)
 
 # Синонимы стендапа в запросах. Отдельного жанра «стендап» у Кинопоиска
 # нет, поэтому при явном запросе поиск идёт по «комедии», а псевдожанр
 # «стендап» в allowed_excluded_genres снимает исключение стендапов.
 STANDUP_SYNONYMS = ('стендап', 'стенд-ап', 'стенд ап', 'stand-up', 'standup')
-from kinopoisk_client import KinopoiskClient
-logger = logging.getLogger(__name__)
 
 
 class RecommendationEngine:
