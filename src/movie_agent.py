@@ -5,6 +5,7 @@ from typing import List, Dict, Optional, Tuple
 from kinopoisk_client import KinopoiskClient
 from recommendation_engine import RecommendationEngine
 from config import KINOPOISK_API_KEY, CACHE_TTL, CURRENT_YEAR
+from utils.movie_filter import extract_imdb_id
 
 logger = logging.getLogger(__name__)
 CANDIDATE_LIMIT = 150
@@ -17,7 +18,8 @@ class MovieAgent:
         self.recommendation_engine = RecommendationEngine(self.kinopoisk_client)
         self._search_cache: Dict[str, Tuple[List[Dict], float]] = {}
 
-    def _get_cache_key(self, user_id, genre_name, year, year_range, actor, director, country, min_imdb_rating, limit, movie_type, query) -> str:
+    def _get_cache_key(self, user_id, genre_name, year, year_range, actor, director, country, min_imdb_rating, limit, movie_type, query,
+                       critics_approved=False) -> str:
         parts = [
             user_id or '',
             genre_name or '',
@@ -29,7 +31,10 @@ class MovieAgent:
             str(min_imdb_rating),
             str(limit),
             movie_type,
-            query or ''
+            query or '',
+            # Режим «одобрено критиками» меняет выдачу — учитываем в ключе,
+            # иначе кэш смешает обычный и критический подбор
+            str(bool(critics_approved))
         ]
         return '_'.join(parts)
 
@@ -46,14 +51,16 @@ class MovieAgent:
         limit: int = 8,
         movie_type: str = 'movie',
         query: Optional[str] = None,
-        user_id: Optional[str] = None
+        user_id: Optional[str] = None,
+        critics_approved: bool = False
     ) -> List[Dict]:
         current_year = CURRENT_YEAR
         if year_range and year_range[1] > current_year:
             year_range = (year_range[0], current_year)
             logger.info(f"Корректировка year_range на текущий год: {year_range}")
 
-        cache_key = self._get_cache_key(user_id, genre_name, year, year_range, actor, director, country, min_imdb_rating, limit, movie_type, query)
+        cache_key = self._get_cache_key(user_id, genre_name, year, year_range, actor, director, country, min_imdb_rating, limit, movie_type, query,
+                                        critics_approved)
 
         if cache_key in self._search_cache:
             cached_data, timestamp = self._search_cache[cache_key]
@@ -78,7 +85,8 @@ class MovieAgent:
                 limit=limit,
                 movie_type=movie_type,
                 query=query,
-                is_top=is_top
+                is_top=is_top,
+                critics_approved=critics_approved
             )
             if movies:
                 self._search_cache[cache_key] = (movies, time.time())
@@ -131,7 +139,9 @@ class MovieAgent:
                 'rating_imdb': rating_imdb,
                 'rating_kp': rating_kp,
                 'description': (best_match.get('description') or '')[:500],
-                'poster_url': poster_url
+                'poster_url': poster_url,
+                # IMDb ID из externalId (фаза 1, B3) — join-ключ для RT (B5)
+                'imdb_id': extract_imdb_id(best_match)
             }]
         except Exception as e:
             logger.warning(f"Ошибка поиска по названию '{title}': {e}", exc_info=True)

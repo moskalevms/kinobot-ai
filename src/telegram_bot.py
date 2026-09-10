@@ -21,6 +21,7 @@ from dialogue_manager import DialogueManager
 from statistics_tracker import track_client_request
 from config import CURRENT_YEAR
 from guardrails import sanitize_message
+from utils.movie_filter import extract_imdb_id
 import aiohttp
 
 load_dotenv()
@@ -235,7 +236,10 @@ async def handle_movie_detail(update: Update, context: ContextTypes.DEFAULT_TYPE
                             'rating_imdb': rating_imdb,
                             'rating_kp': rating_kp,
                             'description': (raw.get('description') or '')[:500],
-                            'poster_url': poster_url
+                            'poster_url': poster_url,
+                            # IMDb ID из externalId (фаза 1, B3): полный
+                            # документ фильма содержит его без selectFields
+                            'imdb_id': extract_imdb_id(raw)
                         }
                         desc = (
                             f"🎬 <strong>{html.escape(str(movie['title']))}</strong> "

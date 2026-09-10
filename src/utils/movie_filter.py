@@ -1,5 +1,5 @@
 # src/utils/movie_filter.py
-from typing import List, Dict, Optional, Set
+from typing import List, Dict, Optional, Set, Tuple
 import logging
 
 logger = logging.getLogger(__name__)
@@ -47,6 +47,24 @@ HIGH_PRIORITY_COUNTRIES = {
     'великобритания', 'uk', 'united kingdom',
 }
 
+# --- Параметры рейтинга кинокритиков (фаза 0, Epic A) ---
+# kinopoisk.dev возвращает rating.filmCritics в шкале 0–10 (НЕ процент).
+# Значение 0 или None означает «нет данных», а не провальную оценку:
+# демотивация в таком случае не применяется (подтверждено исследованием
+# docs/research/research_rotten_tomatoes.md).
+CRITICS_SHRINK_FACTOR = 0.2      # вес шринка базовой оценки к консенсусу критиков
+CRITICS_MIN_VOTES_SHRINK = 10    # минимум голосов критиков для применения шринка
+CRITICS_MIN_VOTES_TIER = 20      # минимум голосов критиков для ступеней ±
+CRITICS_TIER_HIGH_FC = 8.0       # порог «одобрено критиками» (Certified Fresh)
+CRITICS_TIER_LOW_FC = 3.0        # порог «критического провала»
+CRITICS_TIER_BONUS = 0.3         # величина ступени
+# Суммарный кламп ступеней: в будущем сюда добавится ступень Tomatometer
+# (Epic B, задача B6), поэтому ограничиваем ±0.3 уже сейчас.
+CRITICS_TIER_CLAMP = 0.3
+# Границы итоговой оценки (шкала Кинопоиска/IMDb)
+RATING_MIN = 0.0
+RATING_MAX = 10.0
+
 
 def get_country_priority(movie: Dict) -> int:
     """Приоритет фильма по странам производства.
@@ -78,7 +96,13 @@ def is_russian_content(movie: Dict) -> bool:
     return any(rk in country_names for rk in russian_keywords)
 
 
-def get_weighted_rating(movie: Dict, is_russian_search: bool = False) -> float:
+def _get_base_weighted_rating(movie: Dict, is_russian_search: bool = False) -> float:
+    """Базовая оценка фильма без учёта кинокритиков.
+
+    Прежняя логика взвешенного рейтинга: российская ветка — КП, иначе
+    IMDb*0.9; иностранная ветка — IMDb, иначе КП*0.8; 0.0 при отсутствии
+    обоих рейтингов.
+    """
     rating = movie.get('rating', {})
     imdb_rating = rating.get('imdb')
     kp_rating = rating.get('kp')
@@ -97,6 +121,154 @@ def get_weighted_rating(movie: Dict, is_russian_search: bool = False) -> float:
             return kp_rating * 0.8
         else:
             return 0.0
+
+
+def _get_critics_data(movie: Dict) -> Optional[Tuple[float, int]]:
+    """Данные кинокритиков: (рейтинг fc в шкале 0–10, число голосов).
+
+    Возвращает None, когда данных нет: fc отсутствует/None/0 (в любом
+    числовом представлении, включая строковое '0'/'0.0') либо голосов
+    критиков меньше CRITICS_MIN_VOTES_SHRINK. fc == 0 у источника означает
+    «рецензий нет», а не провальную оценку, — демотивация за такое значение
+    недопустима. Нечисловые значения также трактуем как «нет данных».
+    """
+    rating = movie.get('rating') or {}
+    votes = movie.get('votes') or {}
+    fc = rating.get('filmCritics')
+    fc_votes = votes.get('filmCritics') or 0
+
+    # Сначала приводим к числу и только потом проверяем ноль: API может
+    # вернуть fc строкой ('0', '0.0'), и сравнение строки с нулём ('0' == 0)
+    # дало бы False — «нет данных» просочилось бы как провальная оценка.
+    # Проверка None до приведения нужна только для mypy: float(None) и так
+    # ловится TypeError ниже.
+    if fc is None:
+        return None
+    try:
+        fc_value = float(fc)
+        fc_votes_value = int(fc_votes)
+    except (TypeError, ValueError):
+        return None
+    if fc_value == 0:
+        return None
+    if fc_votes_value < CRITICS_MIN_VOTES_SHRINK:
+        return None
+    return fc_value, fc_votes_value
+
+
+def extract_critics_fields(movie: Dict) -> Tuple[Optional[float], Optional[int]]:
+    """Поля кинокритиков для итогового словаря фильма (фаза 0, Epic A, A2).
+
+    Возвращает пару (critics_rating, critics_votes):
+    - critics_rating — rating.filmCritics в шкале 0–10 либо None, если
+      данных нет: поле отсутствует, равно None/0 (в любом представлении,
+      включая строковое '0'/'0.0') или нечисловое — семантика «нет данных»
+      согласована с _get_critics_data (A1);
+    - critics_votes — votes.filmCritics (включая 0) либо None, если поле
+      отсутствует или нечисловое.
+
+    В отличие от _get_critics_data, порог голосов для шринка здесь не
+    применяется: поля просто отражают факт наличия данных в ответе API
+    (используются для выдачи, триггеров и отладки).
+    """
+    rating = movie.get('rating') or {}
+    votes = movie.get('votes') or {}
+    fc = rating.get('filmCritics')
+    fc_votes = votes.get('filmCritics')
+
+    fc_value: Optional[float] = None
+    if fc is not None:
+        try:
+            fc_value = float(fc)
+        except (TypeError, ValueError):
+            fc_value = None
+    # Ноль (в т.ч. строковый) у источника означает «рецензий нет»
+    critics_rating: Optional[float] = None
+    if fc_value is not None and fc_value != 0:
+        critics_rating = fc_value
+
+    critics_votes: Optional[int] = None
+    if fc_votes is not None:
+        try:
+            critics_votes = int(fc_votes)
+        except (TypeError, ValueError):
+            critics_votes = None
+
+    return critics_rating, critics_votes
+
+
+def extract_imdb_id(movie: Dict) -> Optional[str]:
+    """IMDb ID фильма из ответа kinopoisk.dev (фаза 1, Epic B, B3).
+
+    Join-ключ для обогащения оценками Rotten Tomatoes через OMDb (B5):
+    kinopoisk.dev отдаёт внешние идентификаторы в поле externalId
+    ({"imdb": "tt0111161", "tmdb": ..., "trakt": ...}).
+
+    Возвращает непустую строку IMDb ID (с обрезанными пробелами) либо
+    None, если данных нет: externalId отсутствует, не является
+    словарём, imdb равен None/не-строке/пустой строке. Покрытие
+    externalId.imdb — ~69% базы, поэтому None — штатная ситуация
+    (незаметная деградация: RT-бейджа у такого фильма просто нет).
+    """
+    external = movie.get('externalId')
+    if not isinstance(external, dict):
+        return None
+    imdb = external.get('imdb')
+    if not isinstance(imdb, str):
+        return None
+    imdb = imdb.strip()
+    return imdb or None
+
+
+def get_weighted_rating(movie: Dict, is_russian_search: bool = False) -> float:
+    """Взвешенный рейтинг фильма с учётом консенсуса кинокритиков.
+
+    Формула (docs/research/research_rotten_tomatoes.md, §«Итоговая
+    формула ранжирования»; числовые значения заданы константами модуля
+    CRITICS_*/RATING_* — единая точка тюнинга):
+    - base — базовая оценка КП/IMDb с прежними фолбэками; если base == 0.0
+      (зрительских рейтингов нет вовсе), коррекция критиков не применяется:
+      «нет зрительских данных» не должно порождать оценку из одних критиков;
+    - шринк к консенсусу критиков при votes.filmCritics >=
+      CRITICS_MIN_VOTES_SHRINK: s1 = base + CRITICS_SHRINK_FACTOR * (fc - base);
+    - ступень tier: +CRITICS_TIER_BONUS при fc >= CRITICS_TIER_HIGH_FC и
+      votes >= CRITICS_MIN_VOTES_TIER («одобрено критиками»),
+      −CRITICS_TIER_BONUS при fc <= CRITICS_TIER_LOW_FC и
+      votes >= CRITICS_MIN_VOTES_TIER (критический провал); суммарный
+      кламп ступени ±CRITICS_TIER_CLAMP (задел под ступень Tomatometer, B6);
+    - итог: score = clamp(s1 + tier, RATING_MIN, RATING_MAX).
+
+    Без данных критиков (нет поля, fc == 0/None в любом представлении,
+    votes < CRITICS_MIN_VOTES_SHRINK) возвращается base без изменений —
+    полная обратная совместимость с прежней формулой.
+    """
+    base = _get_base_weighted_rating(movie, is_russian_search)
+    if base == 0.0:
+        # Нет ни одного зрительского рейтинга: base — маркер «нет данных»,
+        # шринк от нуля породил бы оценку из одних только критиков
+        return base
+
+    critics = _get_critics_data(movie)
+    if critics is None:
+        # Данных критиков нет: поведение ровно как до учёта критиков
+        return base
+
+    fc, fc_votes = critics
+
+    # Шринк к консенсусу: сдвигаем base на 20% разницы в сторону fc
+    score = base + CRITICS_SHRINK_FACTOR * (fc - base)
+
+    # Ступени «одобрено критиками» / «критический провал» —
+    # только при достаточном числе голосов критиков
+    tier = 0.0
+    if fc_votes >= CRITICS_MIN_VOTES_TIER:
+        if fc >= CRITICS_TIER_HIGH_FC:
+            tier += CRITICS_TIER_BONUS
+        elif fc <= CRITICS_TIER_LOW_FC:
+            tier -= CRITICS_TIER_BONUS
+    tier = max(-CRITICS_TIER_CLAMP, min(CRITICS_TIER_CLAMP, tier))
+
+    return max(RATING_MIN, min(RATING_MAX, score + tier))
 
 
 def is_music_only_content(movie: Dict) -> bool:

@@ -199,7 +199,11 @@ class DialogueManager:
             limit=25,
             movie_type=movie_type,
             country=country,  # ← страна тоже из нового запроса или сессии
-            user_id=session.user_id
+            user_id=session.user_id,
+            # Режим критиков — только из ТЕКУЩЕГО запроса, без наследования
+            # из сессии: «похожие» после обычного подбора должны оставаться
+            # обычным подбором (запросы без критиков не затрагиваются)
+            critics_approved=bool(params.get('critics_approved'))
         )
 
         seen_ids = {m.get('id') for m in last_movies if m.get('id')}
@@ -248,7 +252,11 @@ class DialogueManager:
                 min_imdb_rating=last_params.get('min_rating') or 6.0,
                 limit=30,
                 movie_type=movie_type,
-                user_id=session.user_id
+                user_id=session.user_id,
+                # Режим «одобрено критиками» сохраняется при уточнении —
+                # «другие варианты» продолжают прежний критический подбор;
+                # свежее упоминание критиков в refine-запросе тоже учитывается
+                critics_approved=bool(last_params.get('critics_approved') or params.get('critics_approved'))
             )
             for m in raw_movies:
                 mid = m.get('id')
@@ -270,7 +278,8 @@ class DialogueManager:
                 min_imdb_rating=last_params.get('min_rating') or 6.0,
                 limit=13,
                 movie_type=movie_type,
-                user_id=session.user_id
+                user_id=session.user_id,
+                critics_approved=bool(last_params.get('critics_approved') or params.get('critics_approved'))
             )
             all_new_movies = raw_movies[:13]
             response_text, reply_markup = self._generate_list_response(
@@ -360,7 +369,8 @@ class DialogueManager:
                     limit=limit,
                     movie_type=movie_type,
                     query=use_query,
-                    user_id=session.user_id
+                    user_id=session.user_id,
+                    critics_approved=bool(params.get('critics_approved'))
                 )
                 for m in movies:
                     mid = m.get('id')
@@ -382,7 +392,8 @@ class DialogueManager:
                 limit=limit,
                 movie_type=movie_type,
                 query=use_query,
-                user_id=session.user_id
+                user_id=session.user_id,
+                critics_approved=bool(params.get('critics_approved'))
             )
             for m in movies:
                 mid = m.get('id')

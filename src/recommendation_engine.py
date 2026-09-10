@@ -4,6 +4,8 @@ from typing import List, Dict, Optional, Tuple, Set
 from utils.movie_filter import (
     EXCLUDED_GENRES,
     MUSIC_ONLY_GENRES,
+    extract_critics_fields,
+    extract_imdb_id,
     filter_movies_by_quality,
     is_russian_content,
 )
@@ -15,6 +17,32 @@ logger = logging.getLogger(__name__)
 # нет, поэтому при явном запросе поиск идёт по «комедии», а псевдожанр
 # «стендап» в allowed_excluded_genres снимает исключение стендапов.
 STANDUP_SYNONYMS = ('стендап', 'стенд-ап', 'стенд ап', 'stand-up', 'standup')
+
+# Локальные ворота режима «одобрено критиками» (фаза 0, Epic A, A3):
+# диапазонный фильтр rating.filmCritics=7-10 через query-параметры API
+# молча игнорируется (подтверждённый баг kinopoisk.dev), поэтому
+# фильтрация по самой оценке — только локальная. Порог голосов —
+# отдельная константа (не переиспользуем CRITICS_MIN_VOTES_SHRINK из
+# A1): тюнинг шринка в фазе 2 не должен сдвигать ворота триггера.
+CRITICS_APPROVED_MIN_RATING = 7.0
+CRITICS_APPROVED_MIN_VOTES = 10
+
+
+def _is_critics_approved(movie: Dict) -> bool:
+    """Локальная проверка «одобрено критиками»: fc >= 7 и голосов >= 10.
+
+    Отсеивает мусор вида «10.0 при 1–2 рецензиях». Число голосов
+    дополнительно отсекается на стороне API (votes.filmCritics=10-100000),
+    но локальная проверка страхует от багов источника и данных, пришедших
+    из других контуров поиска.
+    """
+    critics_rating, critics_votes = extract_critics_fields(movie)
+    if critics_rating is None or critics_votes is None:
+        return False
+    return (
+        critics_rating >= CRITICS_APPROVED_MIN_RATING
+        and critics_votes >= CRITICS_APPROVED_MIN_VOTES
+    )
 
 
 class RecommendationEngine:
@@ -34,7 +62,8 @@ class RecommendationEngine:
         limit: int = 8,
         movie_type: str = 'movie',
         query: Optional[str] = None,
-        is_top: bool = False
+        is_top: bool = False,
+        critics_approved: bool = False
     ) -> List[Dict]:
         allowed_excluded_genres = set()
         is_russian_search = bool(country and country.lower() in ['россия', 'russia', 'российская федерация'])
@@ -78,7 +107,8 @@ class RecommendationEngine:
                 query=query,
                 is_top=is_top,
                 allowed_excluded_genres=allowed_excluded_genres,
-                is_russian_search=is_russian_search
+                is_russian_search=is_russian_search,
+                critics_approved=critics_approved
             )
         else:
             return await self._get_general_recommendations(
@@ -93,7 +123,8 @@ class RecommendationEngine:
                 query=query,
                 is_top=is_top,
                 allowed_excluded_genres=allowed_excluded_genres,
-                is_russian_search=is_russian_search
+                is_russian_search=is_russian_search,
+                critics_approved=critics_approved
             )
 
     async def _get_range_recommendations(
@@ -111,7 +142,8 @@ class RecommendationEngine:
         query: Optional[str] = None,
         is_top: bool = False,
         allowed_excluded_genres: Optional[Set[str]] = None,
-        is_russian_search: bool = False
+        is_russian_search: bool = False,
+        critics_approved: bool = False
     ) -> List[Dict]:
         if allowed_excluded_genres is None:
             allowed_excluded_genres = set()
@@ -128,8 +160,11 @@ class RecommendationEngine:
             if len(candidates) >= limit * 2:
                 break
 
-            # 🔧 ИСПРАВЛЕНИЕ: top250 НЕ ИСПОЛЬЗУЕТСЯ при year_range
-            if is_top and year_range is None:
+            # 🔧 ИСПРАВЛЕНИЕ: top250 НЕ ИСПОЛЬЗУЕТСЯ при year_range.
+            # В режиме «одобрено критиками» top250 тоже пропускаем: список
+            # не основан на критиках и был бы целиком отсеян локальным
+            # порогом fc >= 7 — не тратим запрос к API.
+            if is_top and year_range is None and not critics_approved:
                 top_data = await self.kinopoisk_client.search_recommendation(
                     session,
                     genre=actual_genre,
@@ -153,7 +188,8 @@ class RecommendationEngine:
                 movie_type=search_type,
                 query=query,
                 limit=250,
-                country=country
+                country=country,
+                critics_approved=critics_approved
             )
             if search_data and search_data.get('docs'):
                 candidates.extend(search_data['docs'])
@@ -169,6 +205,16 @@ class RecommendationEngine:
         if year_range:
             min_votes_override = 100 if year_range[0] >= 2020 else 500
 
+        if critics_approved:
+            # Порог по оценке критиков через query-параметры API не работает
+            # (подтверждённый баг kinopoisk.dev) — применяем только локально
+            unique_candidates = [m for m in unique_candidates if _is_critics_approved(m)]
+            logger.info(
+                f"[RecommendationEngine] Режим «одобрено критиками»: "
+                f"после локального порога fc>={CRITICS_APPROVED_MIN_RATING} "
+                f"осталось {len(unique_candidates)} кандидатов"
+            )
+
         filtered = filter_movies_by_quality(
             unique_candidates,
             year=year,
@@ -179,6 +225,11 @@ class RecommendationEngine:
             allowed_excluded_genres=allowed_excluded_genres,
             is_russian_search=is_russian_search
         )
+
+        if critics_approved:
+            # Фильтр качества сортирует по взвешенной оценке; в режиме
+            # «одобрено критиками» итоговый порядок — по убыванию fc
+            filtered.sort(key=lambda m: extract_critics_fields(m)[0] or 0.0, reverse=True)
 
         return self._format_movies_list(filtered, limit)
 
@@ -195,7 +246,8 @@ class RecommendationEngine:
         query: Optional[str] = None,
         is_top: bool = False,
         allowed_excluded_genres: Optional[Set[str]] = None,
-        is_russian_search: bool = False
+        is_russian_search: bool = False,
+        critics_approved: bool = False
     ) -> List[Dict]:
         if allowed_excluded_genres is None:
             allowed_excluded_genres = set()
@@ -211,8 +263,10 @@ class RecommendationEngine:
             if len(candidates) >= limit * 2:
                 break
 
-            # Здесь year_range всегда None, поэтому top250 можно использовать
-            if is_top:
+            # Здесь year_range всегда None, поэтому top250 можно использовать.
+            # В режиме «одобрено критиками» top250 пропускаем: список не
+            # основан на критиках и был бы отсеян локальным порогом fc >= 7.
+            if is_top and not critics_approved:
                 top_data = await self.kinopoisk_client.search_recommendation(
                     session,
                     genre=actual_genre,
@@ -233,7 +287,8 @@ class RecommendationEngine:
                 kp_rating_min=min_imdb_rating - 0.5,
                 movie_type=search_type,
                 query=query,
-                limit=250
+                limit=250,
+                critics_approved=critics_approved
             )
             if search_data and search_data.get('docs'):
                 candidates.extend(search_data['docs'])
@@ -246,6 +301,16 @@ class RecommendationEngine:
                 seen_ids.add(mid)
                 unique_candidates.append(movie)
 
+        if critics_approved:
+            # Порог по оценке критиков через query-параметры API не работает
+            # (подтверждённый баг kinopoisk.dev) — применяем только локально
+            unique_candidates = [m for m in unique_candidates if _is_critics_approved(m)]
+            logger.info(
+                f"[RecommendationEngine] Режим «одобрено критиками»: "
+                f"после локального порога fc>={CRITICS_APPROVED_MIN_RATING} "
+                f"осталось {len(unique_candidates)} кандидатов"
+            )
+
         filtered = filter_movies_by_quality(
             unique_candidates,
             min_rating=min_imdb_rating,
@@ -254,6 +319,11 @@ class RecommendationEngine:
             allowed_excluded_genres=allowed_excluded_genres,
             is_russian_search=is_russian_search
         )
+
+        if critics_approved:
+            # Фильтр качества сортирует по взвешенной оценке; в режиме
+            # «одобрено критиками» итоговый порядок — по убыванию fc
+            filtered.sort(key=lambda m: extract_critics_fields(m)[0] or 0.0, reverse=True)
 
         return self._format_movies_list(filtered, limit)
 
@@ -301,6 +371,12 @@ class RecommendationEngine:
                 best_rating = '—'
                 rating_source = "—"
 
+            # Поля кинокритиков (фаза 0, Epic A, A2): присутствуют при
+            # наличии данных в ответе API, иначе None. В UI пока не
+            # выводятся — данные для триггеров (A3), ранжирования (B6)
+            # и отладки; семантика «нет данных» согласована с A1.
+            critics_rating, critics_votes = extract_critics_fields(movie)
+
             description = (movie.get('description') or '')[:500]
             poster_url = ''
             poster = movie.get('poster')
@@ -317,6 +393,11 @@ class RecommendationEngine:
                 'rating_imdb': rating_imdb,
                 'rating_kp': rating_kp,
                 'rating_source': rating_source,
+                'critics_rating': critics_rating,
+                'critics_votes': critics_votes,
+                # IMDb ID из externalId (фаза 1, B3): join-ключ для
+                # обогащения RT-скорами (B5); None у ~31% фильмов.
+                'imdb_id': extract_imdb_id(movie),
                 'description': description,
                 'poster_url': poster_url,
                 'kinopoisk_url': f"https://www.kinopoisk.ru/film/{movie.get('id')}/" if movie.get('id') else None,

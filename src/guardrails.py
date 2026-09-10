@@ -165,4 +165,12 @@ def validate_classifier_output(params: Any) -> Dict[str, Any]:
         except (TypeError, ValueError):
             params["min_rating"] = None
 
+    # Нормализация «одобрено критиками» (фаза 0, Epic A, A3): LLM может
+    # вернуть bool, строку или отсутствующее поле — приводим к bool,
+    # строковые «false»/«нет»/«0» не должны становиться True
+    critics_approved = params.get("critics_approved")
+    if isinstance(critics_approved, str):
+        critics_approved = critics_approved.strip().lower() in ("true", "да", "1", "yes")
+    params["critics_approved"] = bool(critics_approved)
+
     return params

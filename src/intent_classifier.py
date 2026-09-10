@@ -203,6 +203,14 @@ class IntentClassifier:
         if any(word in message_lower for word in ['расскажи', 'информац', 'сюжет', 'описание']):
             params["intent"] = "info"
 
+        # === 10. Триггер «одобрено критиками» (фаза 0, Epic A, A3) ===
+        # Regex по основе «критик» покрывает падежи и числа: критик,
+        # критики, критиков, критикам, критиками, кинокритиков и т.п.
+        # Согласован с полем critics_approved в parameter_extraction_prompt.txt
+        if re.search(r'критик', message_lower):
+            params["critics_approved"] = True
+            logger.info("Извлечён триггер «одобрено критиками»")
+
         logger.info(f"Fallback классификация: {params}")
         return params
 
@@ -220,5 +228,8 @@ class IntentClassifier:
             "mood": None,
             "count": None,
             "min_rating": None,
-            "movie_type": "movie"
+            "movie_type": "movie",
+            # «Одобрено критиками»: поиск с сортировкой по рейтингу
+            # кинокритиков (фаза 0, Epic A, A3)
+            "critics_approved": False
         }

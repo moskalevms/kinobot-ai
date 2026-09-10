@@ -57,3 +57,29 @@ def test_info_intent():
 def test_default_intent_initial():
     params = _classifier()._classify_fallback('посоветуй комедию')
     assert params['intent'] == 'initial'
+
+
+# --- A3: триггер «одобрено критиками» ---
+
+def test_critics_approved_trigger():
+    """Корень «критик» в любой словоформе активирует режим."""
+    for message in (
+        'фильмы одобренные критиками',
+        'топ от критиков',
+        'кино которое любят критики',
+        'выбор кинокритиков',
+        'драма, нравящаяся критикам',
+    ):
+        params = _classifier()._classify_fallback(message)
+        assert params['critics_approved'] is True, message
+
+
+def test_critics_approved_default_false():
+    """Обычные запросы не затронуты."""
+    for message in ('просто драма', 'боевик', 'топ 50 фильмов', 'посоветуй комедию'):
+        params = _classifier()._classify_fallback(message)
+        assert params['critics_approved'] is False, message
+
+
+def test_critics_approved_present_in_default_params():
+    assert _classifier()._get_default_params()['critics_approved'] is False

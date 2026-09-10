@@ -71,14 +71,20 @@ class KinopoiskClient:
         query: Optional[str] = None,
         limit: int = 100,
         country: Optional[str] = None,
-        sort_by: str = 'rating.imdb'
+        sort_by: str = 'rating.imdb',
+        critics_approved: bool = False
     ) -> Optional[dict]:
         params = {
             'limit': min(limit, 250),
             'page': 1,
             'selectFields': [
                 'id', 'name', 'year', 'genres', 'rating', 'votes',
-                'description', 'poster', 'persons', 'countries', 'type'
+                'description', 'poster', 'persons', 'countries', 'type',
+                # externalId (фаза 1, B3): внешние идентификаторы фильма
+                # (imdb/tmdb/trakt); imdb — join-ключ для оценок Rotten
+                # Tomatoes через OMDb. Покрытие externalId.imdb ~69% базы:
+                # у фильмов без него RT-бейджа просто не будет.
+                'externalId'
             ],
             'sortField': sort_by,
             'sortType': -1,
@@ -110,6 +116,18 @@ class KinopoiskClient:
             params['rating.imdb'] = f"{imdb_rating_min}-10"
         if kp_rating_min is not None:
             params['rating.kp'] = f"{kp_rating_min}-10"
+        if critics_approved:
+            # Режим «одобрено критиками» (фаза 0, Epic A, A3): сортировка по
+            # рейтингу критиков, отсечение тайтлов без рейтинга и фильтр по
+            # числу голосов (диапазонный фильтр по ГОЛОСАМ работает).
+            # ВАЖНО: диапазонный фильтр по самой ОЦЕНКЕ rating.filmCritics
+            # API молча игнорирует (подтверждённый баг kinopoisk.dev),
+            # поэтому порог fc >= 7 применяется только локально —
+            # в recommendation_engine.
+            params['sortField'] = 'rating.filmCritics'
+            params['sortType'] = -1
+            params['notNullFields'] = 'rating.filmCritics'
+            params['votes.filmCritics'] = '10-100000'
 
         logger.info(f"[KinopoiskClient] Запрос: {params}")
         return await self._make_request(session, self.base_url, params)
@@ -128,7 +146,8 @@ class KinopoiskClient:
             'limit': min(limit, 250),
             'selectFields': [
                 'id', 'name', 'year', 'genres', 'rating', 'votes',
-                'description', 'poster', 'countries'
+                'description', 'poster', 'countries',
+                'externalId'  # join-ключ IMDb ID (фаза 1, B3)
             ],
             'sortField': 'rating.imdb',
             'sortType': -1,
@@ -172,7 +191,8 @@ class KinopoiskClient:
             'limit': min(limit, 20),
             'selectFields': [
                 'id', 'name', 'alternativeName', 'year', 'genres', 'rating',
-                'votes', 'description', 'poster', 'countries', 'type'
+                'votes', 'description', 'poster', 'countries', 'type',
+                'externalId'  # join-ключ IMDb ID (фаза 1, B3)
             ]
         }
         logger.info(f"[KinopoiskClient] Поиск по названию: {title}")
