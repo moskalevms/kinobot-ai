@@ -1,5 +1,5 @@
 # src/models/database.py
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
 from sqlalchemy import func
@@ -56,6 +56,39 @@ class DialogueSession(db.Model):
 
     def __repr__(self):
         return f'<DialogueSession {self.user_id}>'
+
+
+class RtScore(db.Model):
+    """Кэш оценок Rotten Tomatoes/Metacritic из OMDb (Epic B, задача B4).
+
+    imdb_id — первичный ключ (join-ключ из kinopoisk.dev, задача B3).
+    rt_score/metascore NULL — «источник не дал оценку»; строка с обоими
+    NULL — отрицательный кэш: повторно запрашивать OMDb не нужно.
+    fetched_at — момент получения данных: DateTime(timezone=True) даёт
+    TIMESTAMPTZ в PostgreSQL и DATETIME в SQLite (переносимость для
+    тестов). Значение всегда проставляет rt_cache.set_scores (aware-UTC
+    в момент записи/upsert — от него считается TTL); питоновский default
+    и server_default=func.now() остаются защитой для вставок в обход ORM
+    (ручной SQL, админ-скрипты), чтобы колонка NOT NULL не осталась пустой.
+
+    Единственный источник схемы: init_db.py импортирует модели из этого
+    модуля и создаёт таблицу rt_scores вызовом db.create_all() —
+    дублирования определений нет (см. openspec change add-rt-cache).
+    """
+    __tablename__ = 'rt_scores'
+
+    imdb_id = db.Column(db.Text, primary_key=True)
+    rt_score = db.Column(db.SmallInteger, nullable=True)
+    metascore = db.Column(db.SmallInteger, nullable=True)
+    fetched_at = db.Column(
+        db.DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        server_default=func.now(),
+        nullable=False,
+    )
+
+    def __repr__(self) -> str:
+        return f'<RtScore {self.imdb_id} rt={self.rt_score} meta={self.metascore}>'
 
 
 class UserStatistics(db.Model):

@@ -1,7 +1,14 @@
 import asyncio
 from unittest.mock import AsyncMock
 
-from dialogue_manager import DialogueManager
+import pytest
+
+from dialogue_manager import (
+    DialogueManager,
+    format_movie_card,
+    format_rt_badge,
+    rt_badge_suffix,
+)
 from guardrails import MESSAGE_MAX_LENGTH, REFUSAL_TOO_LONG
 from session_manager import UserSession
 
@@ -226,3 +233,170 @@ def test_similar_passes_critics_from_request():
 
     kwargs = dm.movie_agent.recommend_movies.call_args.kwargs
     assert kwargs['critics_approved'] is True
+
+
+# --- B7: бейдж Tomatometer «🍅 91%» (изменение add-rt-badge) ---
+
+def _movie(**overrides):
+    """Словарь фильма финальной выдачи (поля обогащения B5 включены)."""
+    movie = {
+        'id': 447301, 'title': 'Начало', 'year': 2010, 'genre': 'фантастика',
+        'rating': 8.8, 'description': 'Сон внутри сна', 'poster_url': '',
+        'rt_score': None, 'metascore': None,
+    }
+    movie.update(overrides)
+    return movie
+
+
+@pytest.mark.parametrize('rt_score,expected', [
+    (91, '🍅 91%'),
+    (7, '🍅 7%'),
+    (100, '🍅 100%'),
+    (0, '🍅 0%'),  # 0% одобрения — валидные данные, не «нет оценки»
+])
+def test_format_rt_badge_valid_scores(rt_score, expected):
+    """Формат бейджа: эмодзи, пробел, целый процент, знак процента."""
+    assert format_rt_badge(_movie(rt_score=rt_score)) == expected
+
+
+@pytest.mark.parametrize('rt_score', [
+    None,        # нет данных (нет IMDb ID, сбой OMDb, флаг Epic B выключен)
+    '91',        # строка вместо числа
+    91.0,        # дробное: бейдж обязан быть целым процентом
+    True,        # bool — не оценка
+    101,         # вне шкалы Tomatometer
+    -5,          # вне шкалы Tomatometer
+    'N/A',       # мусорные данные
+])
+def test_format_rt_badge_absent_for_invalid_scores(rt_score):
+    """Без валидного rt_score бейджа нет (пустая строка)."""
+    assert format_rt_badge(_movie(rt_score=rt_score)) == ''
+
+
+def test_format_rt_badge_without_key():
+    """Поля rt_score может не быть вовсе (старый кэш/другой путь выдачи)."""
+    movie = _movie()
+    del movie['rt_score']
+    assert format_rt_badge(movie) == ''
+
+
+def test_format_rt_badge_ignores_metascore():
+    """Только Metacritic: бейдж Tomatometer не выводится."""
+    assert format_rt_badge(_movie(metascore=82)) == ''
+
+
+def test_rt_badge_suffix_with_score():
+    assert rt_badge_suffix(_movie(rt_score=91)) == ' · 🍅 91%'
+
+
+def test_rt_badge_suffix_without_score_is_empty():
+    """Пустой суффикс — никаких висящих разделителей и пробелов."""
+    assert rt_badge_suffix(_movie()) == ''
+
+
+def test_movie_card_contains_badge():
+    card = format_movie_card(_movie(rt_score=91))
+
+    assert 'с рейтингом 8.8 · 🍅 91%.' in card
+    assert card.startswith('🎬 <strong>Начало</strong> (2010) — фантастика')
+    assert card.endswith('Сон внутри сна')
+
+
+def test_movie_card_without_badge_is_backward_compatible():
+    """Без rt_score текст карточки побайтово прежний (до B7)."""
+    assert format_movie_card(_movie()) == (
+        '🎬 <strong>Начало</strong> (2010) — фантастика с рейтингом 8.8.\n'
+        'Сон внутри сна'
+    )
+
+
+def test_movie_card_escapes_html():
+    """Экранирование полей карточки сохранено после рефакторинга."""
+    card = format_movie_card(_movie(title='Фильм <b>&</b>', rt_score=76))
+
+    assert '&lt;b&gt;&amp;&lt;/b&gt;' in card
+    assert '<b>&</b>' not in card
+    assert ' · 🍅 76%.' in card
+
+
+def test_info_response_contains_badge():
+    dm = _manager()
+    dm.intent_classifier.classify_with_llm = AsyncMock(
+        return_value={'intent': 'info', 'target_movie': 'Начало'}
+    )
+    dm.movie_agent.search_by_title = AsyncMock(return_value=[_movie(rt_score=91)])
+
+    result = _run(dm.process_message(None, 'u1', 'расскажи о фильме Начало'))
+
+    assert '🍅 91%' in result['response']
+
+
+def test_info_response_without_rt_score_has_no_badge():
+    dm = _manager()
+    dm.intent_classifier.classify_with_llm = AsyncMock(
+        return_value={'intent': 'info', 'target_movie': 'Начало'}
+    )
+    dm.movie_agent.search_by_title = AsyncMock(return_value=[_movie()])
+
+    result = _run(dm.process_message(None, 'u1', 'расскажи о фильме Начало'))
+
+    assert '🍅' not in result['response']
+    assert ' · ' not in result['response']
+
+
+def test_list_response_line_with_badge():
+    dm = _manager()
+    movies = [_movie(rt_score=91)]
+
+    response, keyboard = dm._generate_list_response(movies, 'Рекомендации фильма')
+
+    assert (
+        '1. <strong>Начало</strong> (2010) — ⭐ 8.8 · 🍅 91%\n' in response
+    )
+    # Бейдж — в конце строки, перенос строки сразу после него
+    assert '🍅 91%\n' in response
+    assert len(keyboard.inline_keyboard) == 1
+
+
+def test_list_response_mixed_badges():
+    """Бейдж только у фильмов с данными: строки без rt_score не меняются."""
+    dm = _manager()
+    movies = [
+        _movie(rt_score=91),
+        _movie(id=2, title='Фильм 2', year=2020, rating=8.0),
+    ]
+
+    response, keyboard = dm._generate_list_response(movies, 'Заголовок')
+
+    lines = response.splitlines()
+    assert lines[1] == '1. <strong>Начало</strong> (2010) — ⭐ 8.8 · 🍅 91%'
+    assert lines[2] == '2. <strong>Фильм 2</strong> (2020) — ⭐ 8.0'
+    assert response.count('🍅') == 1
+    assert len(keyboard.inline_keyboard) == 2
+
+
+def test_list_response_without_rt_scores_is_backward_compatible():
+    """Выдача без RT-данных побайтово совпадает с прежним форматом."""
+    dm = _manager()
+    movies = [{'id': 1, 'title': 'Фильм 1', 'year': 2020, 'rating': 8.0}]
+
+    response, keyboard = dm._generate_list_response(movies, 'Заголовок')
+
+    assert response == (
+        '<strong>Заголовок</strong>\n'
+        '1. <strong>Фильм 1</strong> (2020) — ⭐ 8.0\n'
+    )
+    assert '🍅' not in response
+    assert ' · ' not in response
+    # Кнопки не меняются: бейдж в подпись кнопки не добавляется
+    assert keyboard.inline_keyboard[0][0].text == 'Подробнее: Фильм 1'
+
+
+def test_list_response_badge_not_in_buttons():
+    dm = _manager()
+    movies = [_movie(rt_score=91)]
+
+    _, keyboard = dm._generate_list_response(movies, 'Заголовок')
+
+    assert '🍅' not in keyboard.inline_keyboard[0][0].text
+    assert keyboard.inline_keyboard[0][0].callback_data == 'info:447301'

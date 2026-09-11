@@ -6,6 +6,7 @@ from kinopoisk_client import KinopoiskClient
 from recommendation_engine import RecommendationEngine
 from config import KINOPOISK_API_KEY, CACHE_TTL, CURRENT_YEAR
 from utils.movie_filter import extract_imdb_id
+from rt_enrichment import enrich_movies_with_rt_scores
 
 logger = logging.getLogger(__name__)
 CANDIDATE_LIMIT = 150
@@ -129,7 +130,7 @@ class MovieAgent:
             rating_kp = best_match.get('rating', {}).get('kp')
             poster_url = best_match.get('poster', {}).get('url', '').strip()
 
-            return [{
+            card = {
                 'id': best_match.get('id'),
                 'title': best_match.get('name') or '—',
                 'year': best_match.get('year'),
@@ -142,7 +143,11 @@ class MovieAgent:
                 'poster_url': poster_url,
                 # IMDb ID из externalId (фаза 1, B3) — join-ключ для RT (B5)
                 'imdb_id': extract_imdb_id(best_match)
-            }]
+            }
+            # Обогащение карточки RT-оценками (фаза 1, B5): одно обращение к
+            # источнику, данные для бейджа B7 в info-интенте. Fail-silent —
+            # при любом сбое карточка возвращается с rt_score=None.
+            return await enrich_movies_with_rt_scores(session, [card])
         except Exception as e:
             logger.warning(f"Ошибка поиска по названию '{title}': {e}", exc_info=True)
             return []

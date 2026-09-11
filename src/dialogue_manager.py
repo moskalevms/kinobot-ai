@@ -21,6 +21,75 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 logger = logging.getLogger(__name__)
 
+# --- Бейдж Rotten Tomatoes (фаза 1, Epic B, B7) ---
+# Эмодзи-гайдлайн (docs/research/research_uiux_telegram.md, рекомендация 13):
+# правило «1 эмодзи = 1 смысл» — 🍅 закреплён ИСКЛЮЧИТЕЛЬНО за процентом
+# одобрения фильма критиками Rotten Tomatoes (Tomatometer), других значений
+# у него в боте нет. Порога «свежести» для показа бейджа намеренно нет:
+# число рядом с 🍅 и есть процент одобрения, поэтому «🍅 32%» читается
+# корректно, а наличие бейджа определяется только наличием данных.
+# Осознанное отклонение от правила «не более 1 эмодзи на строку списка»:
+# ⭐ (зрительский рейтинг) и 🍅 (консенсус критиков) — функциональные
+# маркеры источника оценки, а не декор, и бейдж появляется только у фильмов
+# с RT-данными (обоснование — design.md D4 изменения add-rt-badge).
+RT_BADGE_EMOJI = '🍅'
+# Разделитель между рейтингом и бейджем: бейдж ставится в конце строки
+# списка/предложения карточки — по гайдлайну эмодзи не в середине фразы.
+RT_BADGE_SEPARATOR = ' · '
+# Шкала Tomatometer — процент одобрения 0–100 (0 — валидное значение).
+RT_BADGE_MIN = 0
+RT_BADGE_MAX = 100
+
+
+def format_rt_badge(movie: Dict[str, Any]) -> str:
+    """Собрать бейдж Tomatometer «🍅 91%» для словаря фильма.
+
+    Пустая строка возвращается, если оценки критиков нет либо она
+    некорректна: None/отсутствие ключа (нет IMDb ID, сбой OMDb, выключен
+    feature flag Epic B), нечисловое значение, bool или выход за диапазон
+    0–100. `rt_score == 0` — валидные данные («0% одобрения»), бейдж
+    выводится. Текст бейджа не содержит HTML-символов; логировать его
+    нельзя (консоль cp1251 падает на эмодзи — ловушка AGENTS.md).
+    """
+    rt_score = movie.get('rt_score')
+    if isinstance(rt_score, bool) or not isinstance(rt_score, int):
+        # None, строки, дробные и прочие мусорные значения — «нет данных»
+        return ''
+    if not RT_BADGE_MIN <= rt_score <= RT_BADGE_MAX:
+        # Значение вне шкалы Tomatometer трактуем как отсутствие оценки
+        return ''
+    return f'{RT_BADGE_EMOJI} {rt_score}%'
+
+
+def rt_badge_suffix(movie: Dict[str, Any]) -> str:
+    """Суффикс « · 🍅 91%» для строки списка/карточки либо пустая строка.
+
+    Разделитель возвращается вместе с бейджем, чтобы при отсутствии
+    RT-данных в тексте не оставалось висящих пробелов и разделителей:
+    выдача без `rt_score` побайтово совпадает с прежней.
+    """
+    badge = format_rt_badge(movie)
+    return f'{RT_BADGE_SEPARATOR}{badge}' if badge else ''
+
+
+def format_movie_card(movie: Dict[str, Any]) -> str:
+    """Общий HTML-текст карточки фильма (info-интент и кнопка «Подробнее»).
+
+    Формат карточки один на два рендерера: `_generate_single_movie_response`
+    (ответ info-интента) и `telegram_bot.handle_movie_detail` (карточка по
+    callback) — бейдж Tomatometer добавляется в единственной точке, чтобы
+    текст не разъезжался между ними.
+    """
+    title = html.escape(str(movie.get('title', '—')))
+    year = html.escape(str(movie.get('year', '')))
+    genre = html.escape(str(movie.get('genre', '—')))
+    rating = html.escape(str(movie.get('rating', '—')))
+    description = html.escape(str(movie.get('description', '')))
+    return (
+        f"🎬 <strong>{title}</strong> ({year}) — {genre} с рейтингом {rating}"
+        f"{rt_badge_suffix(movie)}.\n{description}"
+    )
+
 
 class DialogueManager:
     def __init__(self, session_manager: SessionManager):
@@ -546,7 +615,12 @@ class DialogueManager:
             title = movie.get('title', '—')
             year = movie.get('year', '')
             rating = movie.get('rating', '—')
-            response += f"{i}. <strong>{html.escape(str(title))}</strong> ({html.escape(str(year))}) — ⭐ {html.escape(str(rating))}\n"
+            # Бейдж Tomatometer (B7) — в конце строки, только при наличии
+            # валидного rt_score; без данных строка прежняя
+            response += (
+                f"{i}. <strong>{html.escape(str(title))}</strong> ({html.escape(str(year))}) — ⭐ {html.escape(str(rating))}"
+                f"{rt_badge_suffix(movie)}\n"
+            )
             movie_id = movie.get('id') or 0
             callback_data = f"info:{movie_id}"
             buttons.append([InlineKeyboardButton(f"Подробнее: {title}", callback_data=callback_data)])
@@ -554,12 +628,8 @@ class DialogueManager:
         return response, keyboard
 
     def _generate_single_movie_response(self, movie: Dict) -> str:
-        title = html.escape(str(movie.get('title', '—')))
-        year = html.escape(str(movie.get('year', '')))
-        genre = html.escape(str(movie.get('genre', '—')))
-        rating = html.escape(str(movie.get('rating', '—')))
-        description = html.escape(str(movie.get('description', '')))
-        return f"🎬 <strong>{title}</strong> ({year}) — {genre} с рейтингом {rating}.\n{description}"
+        # Формат карточки общий с callback «Подробнее» в telegram_bot (B7)
+        return format_movie_card(movie)
 
     def _update_session(self, session: UserSession, result: Dict):
         if "movies_list" in result:

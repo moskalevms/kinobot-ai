@@ -1,5 +1,4 @@
 # src/telegram_bot.py
-import html
 import os
 import logging
 from telegram import (
@@ -17,11 +16,12 @@ from telegram.ext import (
 )
 from dotenv import load_dotenv
 from session_manager import SessionManager
-from dialogue_manager import DialogueManager
+from dialogue_manager import DialogueManager, format_movie_card
 from statistics_tracker import track_client_request
 from config import CURRENT_YEAR
 from guardrails import sanitize_message
 from utils.movie_filter import extract_imdb_id
+from rt_enrichment import enrich_movies_with_rt_scores
 import aiohttp
 
 load_dotenv()
@@ -241,12 +241,14 @@ async def handle_movie_detail(update: Update, context: ContextTypes.DEFAULT_TYPE
                             # документ фильма содержит его без selectFields
                             'imdb_id': extract_imdb_id(raw)
                         }
-                        desc = (
-                            f"🎬 <strong>{html.escape(str(movie['title']))}</strong> "
-                            f"({html.escape(str(movie['year']))}) — {html.escape(str(movie['genre']))} "
-                            f"с рейтингом {html.escape(str(movie['rating']))}.\n"
-                            f"{html.escape(str(movie['description']))}"
-                        )
+                        # Обогащение карточки RT-оценками (фаза 1, B5): данные
+                        # для бейджа B7; fail-silent — при сбое источника или
+                        # кэша карточка отправляется без оценок
+                        movie = (await enrich_movies_with_rt_scores(http_session, [movie]))[0]
+                        # Карточка собирается общей функцией форматирования
+                        # (B7): тот же текст, что в info-интенте, с бейджем
+                        # «🍅 NN%» при наличии валидного rt_score
+                        desc = format_movie_card(movie)
                         await query.message.reply_text(desc, parse_mode='HTML')
                         if poster_url:
                             try:

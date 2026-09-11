@@ -1,6 +1,9 @@
 # init_db.py
 # Единая точка инициализации базы данных: модели берутся из
 # src/models/database.py, дублирующих определений нет.
+# Все таблицы — включая rt_scores (кэш оценок Rotten Tomatoes, Epic B/B4,
+# модель RtScore) — создаются вызовом db.create_all() ниже; схема rt_scores
+# определена только в src/models/database.py и здесь НЕ дублируется.
 import os
 import sys
 

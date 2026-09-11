@@ -1,12 +1,15 @@
 import pytest
 
 from utils.movie_filter import (
+    apply_rt_to_score,
     extract_critics_fields,
     extract_imdb_id,
     filter_movies_by_quality,
     get_country_priority,
+    get_critics_tier,
     get_weighted_rating,
     is_russian_content,
+    rerank_with_rt,
     should_exclude_by_genre,
 )
 
@@ -377,3 +380,216 @@ def test_imdb_id_non_string_value():
 
 def test_imdb_id_empty_movie_dict():
     assert extract_imdb_id({}) is None
+
+
+# --- B6: RT в ранжировании — get_critics_tier (выделение ступени fc из A1) ---
+
+
+def test_critics_tier_values():
+    """Ступень fc: +0.3 / −0.3 / 0.0 — те же пороги, что в A1."""
+    fresh = _movie('Ф', ['драма'], ['США'], imdb=7.0, fc=8.4, fc_votes=147)
+    flop = _movie('Ф', ['драма'], ['США'], imdb=7.0, fc=2.5, fc_votes=30)
+    neutral = _movie('Ф', ['драма'], ['США'], imdb=7.0, fc=6.0, fc_votes=100)
+    few_votes = _movie('Ф', ['драма'], ['США'], imdb=7.0, fc=9.0, fc_votes=15)
+    no_data = _movie('Ф', ['драма'], ['США'], imdb=7.0)
+    assert get_critics_tier(fresh) == pytest.approx(0.3)
+    assert get_critics_tier(flop) == pytest.approx(-0.3)
+    assert get_critics_tier(neutral) == 0.0
+    assert get_critics_tier(few_votes) == 0.0
+    assert get_critics_tier(no_data) == 0.0
+
+
+# --- B6: RT в ранжировании — apply_rt_to_score (чистая функция s1 → s2) ---
+
+
+def test_rt_normalization_percent_to_ten_scale():
+    """Нормализация rt/10 обязательна: rt=100 → цель шринка 10.0, не 100."""
+    # 7.0 + 0.2·(10.0 − 7.0) = 7.6, ступень +0.3 (100 >= 75) → 7.9
+    assert apply_rt_to_score(7.0, 100) == pytest.approx(7.9)
+
+
+def test_rt_shrink_toward_higher_consensus():
+    # 7.0 + 0.2·(9.0 − 7.0) = 7.4, ступень +0.3 (90 >= 75) → 7.7
+    assert apply_rt_to_score(7.0, 90) == pytest.approx(7.7)
+
+
+def test_rt_shrink_toward_lower_consensus():
+    # 7.0 + 0.2·(3.0 − 7.0) = 6.2, ступень −0.3 (30 <= 40) → 5.9
+    assert apply_rt_to_score(7.0, 30) == pytest.approx(5.9)
+
+
+def test_rt_tier_boundary_exactly_75():
+    """Граница +0.3 нестрогая: rt=75 → 7.0 + 0.2·0.5 = 7.1, +0.3 → 7.4."""
+    assert apply_rt_to_score(7.0, 75) == pytest.approx(7.4)
+
+
+def test_rt_tier_boundary_exactly_40():
+    """Граница −0.3 нестрогая: rt=40 → 7.0 + 0.2·(−3.0) = 6.4, −0.3 → 6.1."""
+    assert apply_rt_to_score(7.0, 40) == pytest.approx(6.1)
+
+
+def test_rt_neutral_no_tier():
+    """rt=60 (между 40 и 75): только шринк → 7.0 + 0.2·(−1.0) = 6.8."""
+    assert apply_rt_to_score(7.0, 60) == pytest.approx(6.8)
+
+
+def test_rt_none_score_unchanged():
+    """rt=None (нет IMDb ID / сбой / флаг выключен) → s1 без изменений."""
+    assert apply_rt_to_score(7.0, None) == 7.0
+
+
+def test_rt_russian_search_score_unchanged():
+    """Российская ветка не затронута даже при наличии rt."""
+    assert apply_rt_to_score(7.0, 91, is_russian_search=True) == 7.0
+    assert apply_rt_to_score(8.5, 10, is_russian_search=True) == 8.5
+
+
+def test_rt_non_numeric_score_unchanged():
+    """Нечисловой rt — «нет данных»: s1 без изменений."""
+    assert apply_rt_to_score(7.0, 'много') == 7.0  # type: ignore[arg-type]
+
+
+def test_rt_zero_is_valid_penalty():
+    """rt=0 — валидные 0% «свежести»: шринк к 0 и ступень −0.3."""
+    # 7.0 + 0.2·(0 − 7.0) = 5.6, ступень −0.3 (0 <= 40) → 5.3
+    assert apply_rt_to_score(7.0, 0) == pytest.approx(5.3)
+
+
+def test_rt_zero_base_score_unchanged():
+    """s1 == 0.0 — маркер «нет зрительских рейтингов»: коррекция не применяется."""
+    assert apply_rt_to_score(0.0, 91) == 0.0
+
+
+def test_rt_combined_tier_clamp_same_sign():
+    """Ступени fc(+0.3) и rt(+0.3) суммарно клампятся в +0.3, не +0.6."""
+    # s1 = 7.58 (fc-шринк 7.28 + ступень fc +0.3), rt=91:
+    # шринк rt: 7.58 + 0.2·(9.1 − 7.58) = 7.884; суммарная ступень +0.3
+    # (кламп) — та же, что уже внутри s1 → итог 7.884
+    assert apply_rt_to_score(7.58, 91, critics_tier=0.3) == pytest.approx(7.884)
+
+
+def test_rt_combined_tier_clamp_opposite_sign():
+    """Ступень fc +0.3 и ступень rt −0.3 гасят друг друга (сумма 0)."""
+    # s1 = 7.3 (ступень fc +0.3 уже внутри), rt=30:
+    # шринк rt: 7.3 + 0.2·(3.0 − 7.3) = 6.44; итого 6.44 − 0.3 + 0 = 6.14
+    assert apply_rt_to_score(7.3, 30, critics_tier=0.3) == pytest.approx(6.14)
+
+
+def test_rt_combined_tier_clamp_both_negative():
+    """Ступени fc(−0.3) и rt(−0.3) суммарно клампятся в −0.3, не −0.6."""
+    # s1 = 5.8 (ступень fc −0.3 уже внутри), rt=20:
+    # шринк rt: 5.8 + 0.2·(2.0 − 5.8) = 5.04; итого 5.04 + 0.3 − 0.3 = 5.04
+    assert apply_rt_to_score(5.8, 20, critics_tier=-0.3) == pytest.approx(5.04)
+
+
+def test_rt_score_clamped_to_ten():
+    # 9.9 + 0.2·(10.0 − 9.9) = 9.92, ступень +0.3 → 10.22 → кламп 10.0
+    assert apply_rt_to_score(9.9, 100) == 10.0
+
+
+def test_rt_score_clamped_to_zero():
+    # 0.1 + 0.2·(0 − 0.1) = 0.08, ступень −0.3 → −0.22 → кламп 0.0
+    assert apply_rt_to_score(0.1, 0) == 0.0
+
+
+def test_rt_formula_end_to_end_with_fc():
+    """Связка A1 → B6: s1 = get_weighted_rating, ступень = get_critics_tier."""
+    movie = _movie('Ф', ['драма'], ['США'], imdb=7.0, imdb_votes=1000, fc=8.4, fc_votes=147)
+    s1 = get_weighted_rating(movie)
+    tier_fc = get_critics_tier(movie)
+    # s1: 7.0 + 0.2·(8.4 − 7.0) = 7.28, ступень +0.3 → 7.58
+    assert s1 == pytest.approx(7.58)
+    assert tier_fc == pytest.approx(0.3)
+    # s2: шринк rt (7.884), суммарный кламп ступеней +0.3 → без надбавки
+    assert apply_rt_to_score(s1, 91, critics_tier=tier_fc) == pytest.approx(7.884)
+
+
+# --- B6: RT в ранжировании — rerank_with_rt (пересортировка финала) ---
+
+
+def _ranked(name, score, rt=None, priority=0, tier=0.0):
+    """Финальный словарь фильма после форматирования и обогащения (B5+B6)."""
+    return {
+        'name': name,
+        'weighted_score': score,
+        'rt_score': rt,
+        'metascore': None,
+        'country_priority': priority,
+        'critics_tier': tier,
+    }
+
+
+def test_rerank_boosts_movie_with_high_rt():
+    """rt=91 поднимает фильм 7.4 (→8.04) выше фильма 7.6 без rt."""
+    a = _ranked('A', 7.6)
+    b = _ranked('B', 7.4, rt=91)
+    result = rerank_with_rt([a, b])
+    assert [m['name'] for m in result] == ['B', 'A']
+    assert result[0]['weighted_score'] == pytest.approx(8.04)
+
+
+def test_rerank_demotes_movie_with_low_rt():
+    """rt=20 опускает фильм 7.5 (→6.1) ниже фильма 7.0 без rt."""
+    a = _ranked('A', 7.5, rt=20)
+    b = _ranked('B', 7.0)
+    result = rerank_with_rt([a, b])
+    assert [m['name'] for m in result] == ['B', 'A']
+
+
+def test_rerank_without_rt_keeps_order():
+    """Обратная совместимость: ни одного rt_score → порядок фазы 0+A1+B5."""
+    a = _ranked('A', 7.6)
+    b = _ranked('B', 7.4)
+    result = rerank_with_rt([a, b])
+    assert [m['name'] for m in result] == ['A', 'B']
+    assert result[0]['weighted_score'] == 7.6
+    assert result[1]['weighted_score'] == 7.4
+
+
+def test_rerank_stable_on_equal_scores():
+    """Равные итоги сохраняют относительный порядок (стабильность)."""
+    a = _ranked('A', 7.0)
+    b = _ranked('B', 7.0)
+    assert [m['name'] for m in rerank_with_rt([a, b])] == ['A', 'B']
+    assert [m['name'] for m in rerank_with_rt([b, a])] == ['B', 'A']
+
+
+def test_rerank_respects_country_priority_groups():
+    """Приоритетная группировка по странам не ломается RT-бустом."""
+    usa = _ranked('США-фильм', 7.0, priority=0)
+    france = _ranked('Франция-фильм', 6.8, rt=91, priority=2)
+    result = rerank_with_rt([france, usa])
+    assert [m['name'] for m in result] == ['США-фильм', 'Франция-фильм']
+
+
+def test_rerank_russian_search_is_noop():
+    """Российская ветка: ни пересчёта, ни пересортировки."""
+    a = _ranked('A', 8.0)
+    b = _ranked('B', 7.0, rt=91)
+    result = rerank_with_rt([a, b], is_russian_search=True)
+    assert [m['name'] for m in result] == ['A', 'B']
+    assert b['weighted_score'] == 7.0
+
+
+def test_rerank_without_weighted_score_is_noop():
+    """Словари без числового weighted_score не пересортировываются (защита)."""
+    a = {'name': 'A', 'rt_score': 91}
+    b = {'name': 'B', 'weighted_score': 7.0, 'rt_score': 10, 'critics_tier': 0.0}
+    result = rerank_with_rt([a, b])
+    assert [m['name'] for m in result] == ['A', 'B']
+    assert b['weighted_score'] == 7.0
+
+
+def test_rerank_composition_unchanged():
+    """Пересортировка не меняет состав списка (B5: выдача цела)."""
+    movies = [_ranked('A', 7.0, rt=10), _ranked('B', 7.5), _ranked('C', 6.9, rt=95)]
+    result = rerank_with_rt(movies)
+    assert len(result) == 3
+    assert sorted(m['name'] for m in result) == ['A', 'B', 'C']
+    # C: 6.9 + 0.2·(9.5 − 6.9) = 7.42, ступень +0.3 → 7.72; B: 7.5 без rt;
+    # A: 7.0 + 0.2·(1.0 − 7.0) = 5.8, ступень −0.3 → 5.5
+    assert [m['name'] for m in result] == ['C', 'B', 'A']
+
+
+def test_rerank_empty_list_is_noop():
+    assert rerank_with_rt([]) == []

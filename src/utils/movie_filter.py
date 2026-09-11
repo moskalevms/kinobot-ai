@@ -58,12 +58,24 @@ CRITICS_MIN_VOTES_TIER = 20      # минимум голосов критико�
 CRITICS_TIER_HIGH_FC = 8.0       # порог «одобрено критиками» (Certified Fresh)
 CRITICS_TIER_LOW_FC = 3.0        # порог «критического провала»
 CRITICS_TIER_BONUS = 0.3         # величина ступени
-# Суммарный кламп ступеней: в будущем сюда добавится ступень Tomatometer
-# (Epic B, задача B6), поэтому ограничиваем ±0.3 уже сейчас.
+# Суммарный кламп ступеней: ступень fc (A1) и ступень Tomatometer (B6)
+# складываются и ограничиваются ±0.3 СУММАРНО (две однонаправленные
+# ступени не удваиваются, разнонаправленные — гасят друг друга).
 CRITICS_TIER_CLAMP = 0.3
 # Границы итоговой оценки (шкала Кинопоиска/IMDb)
 RATING_MIN = 0.0
 RATING_MAX = 10.0
+
+# --- Параметры Tomatometer (фаза 1, Epic B, B6) ---
+# rt_score из OMDb — процент «свежести» 0–100, шкала оценки ранжирования —
+# 0–10, поэтому нормализация rt/10 обязательна (смешение единиц недопустимо).
+# Значение None означает «нет данных» (нет IMDb ID, сбой, выключен флаг);
+# rt_score == 0 — валидная провальная оценка (0% «свежести»), не «нет данных».
+RT_SHRINK_FACTOR = 0.2     # вес шринка оценки s1 к консенсусу критиков RT
+RT_TIER_HIGH = 75          # порог «одобрено критиками RT» (Certified Fresh)
+RT_TIER_LOW = 40           # порог «провала» по мнению критиков RT
+RT_TIER_BONUS = 0.3        # величина ступени Tomatometer
+RT_PERCENT_SCALE = 10.0    # делитель нормализации: 0–100 → шкала 0–10
 
 
 def get_country_priority(movie: Dict) -> int:
@@ -220,8 +232,37 @@ def extract_imdb_id(movie: Dict) -> Optional[str]:
     return imdb or None
 
 
+def get_critics_tier(movie: Dict) -> float:
+    """Ступень по rating.filmCritics (фаза 0, A1): +0.3 / −0.3 / 0.0.
+
+    +CRITICS_TIER_BONUS при fc >= CRITICS_TIER_HIGH_FC и votes >=
+    CRITICS_MIN_VOTES_TIER («одобрено критиками»), −CRITICS_TIER_BONUS при
+    fc <= CRITICS_TIER_LOW_FC и тех же голосах (критический провал), иначе 0.
+    Результат клампится ±CRITICS_TIER_CLAMP (для одной ступени fc кламп
+    ничего не меняет, но функция возвращает величину, готовую к суммированию
+    со ступенью Tomatometer в apply_rt_to_score — суммарный кламп ±0.3).
+    Без данных критиков (см. _get_critics_data) возвращается 0.0.
+
+    Выделена из get_weighted_rating (B6): величина уже применённой ступени fc
+    нужна пересчёту оценки после обогащения RT — из одной итоговой оценки s1
+    ступень не извлекается.
+    """
+    critics = _get_critics_data(movie)
+    if critics is None:
+        return 0.0
+
+    fc, fc_votes = critics
+    tier = 0.0
+    if fc_votes >= CRITICS_MIN_VOTES_TIER:
+        if fc >= CRITICS_TIER_HIGH_FC:
+            tier += CRITICS_TIER_BONUS
+        elif fc <= CRITICS_TIER_LOW_FC:
+            tier -= CRITICS_TIER_BONUS
+    return max(-CRITICS_TIER_CLAMP, min(CRITICS_TIER_CLAMP, tier))
+
+
 def get_weighted_rating(movie: Dict, is_russian_search: bool = False) -> float:
-    """Взвешенный рейтинг фильма с учётом консенсуса кинокритиков.
+    """Взвешенный рейтинг фильма с учётом консенсуса кинокритиков (s1, A1).
 
     Формула (docs/research/research_rotten_tomatoes.md, §«Итоговая
     формула ранжирования»; числовые значения заданы константами модуля
@@ -231,16 +272,16 @@ def get_weighted_rating(movie: Dict, is_russian_search: bool = False) -> float:
       «нет зрительских данных» не должно порождать оценку из одних критиков;
     - шринк к консенсусу критиков при votes.filmCritics >=
       CRITICS_MIN_VOTES_SHRINK: s1 = base + CRITICS_SHRINK_FACTOR * (fc - base);
-    - ступень tier: +CRITICS_TIER_BONUS при fc >= CRITICS_TIER_HIGH_FC и
-      votes >= CRITICS_MIN_VOTES_TIER («одобрено критиками»),
-      −CRITICS_TIER_BONUS при fc <= CRITICS_TIER_LOW_FC и
-      votes >= CRITICS_MIN_VOTES_TIER (критический провал); суммарный
-      кламп ступени ±CRITICS_TIER_CLAMP (задел под ступень Tomatometer, B6);
+    - ступень fc — см. get_critics_tier (±CRITICS_TIER_BONUS при голосах >=
+      CRITICS_MIN_VOTES_TIER, кламп ±CRITICS_TIER_CLAMP);
     - итог: score = clamp(s1 + tier, RATING_MIN, RATING_MAX).
 
     Без данных критиков (нет поля, fc == 0/None в любом представлении,
     votes < CRITICS_MIN_VOTES_SHRINK) возвращается base без изменений —
     полная обратная совместимость с прежней формулой.
+
+    Возвращает оценку s1 — вход функции apply_rt_to_score (B6): учёт
+    Tomatometer выполняется уже после обогащения финальной выдачи.
     """
     base = _get_base_weighted_rating(movie, is_russian_search)
     if base == 0.0:
@@ -253,22 +294,120 @@ def get_weighted_rating(movie: Dict, is_russian_search: bool = False) -> float:
         # Данных критиков нет: поведение ровно как до учёта критиков
         return base
 
-    fc, fc_votes = critics
+    fc, _fc_votes = critics
 
     # Шринк к консенсусу: сдвигаем base на 20% разницы в сторону fc
     score = base + CRITICS_SHRINK_FACTOR * (fc - base)
 
-    # Ступени «одобрено критиками» / «критический провал» —
-    # только при достаточном числе голосов критиков
-    tier = 0.0
-    if fc_votes >= CRITICS_MIN_VOTES_TIER:
-        if fc >= CRITICS_TIER_HIGH_FC:
-            tier += CRITICS_TIER_BONUS
-        elif fc <= CRITICS_TIER_LOW_FC:
-            tier -= CRITICS_TIER_BONUS
-    tier = max(-CRITICS_TIER_CLAMP, min(CRITICS_TIER_CLAMP, tier))
+    return max(RATING_MIN, min(RATING_MAX, score + get_critics_tier(movie)))
 
-    return max(RATING_MIN, min(RATING_MAX, score + tier))
+
+def apply_rt_to_score(
+    score: float,
+    rt_score: Optional[int],
+    is_russian_search: bool = False,
+    critics_tier: float = 0.0,
+) -> float:
+    """Пересчёт оценки ранжирования с учётом Tomatometer (фаза 1, Epic B, B6).
+
+    Чистая функция: вход — оценка s1 после A1 (get_weighted_rating),
+    `rt_score` (Tomatometer, процент 0–100 либо None), признак российской
+    ветки и величина уже применённой ступени fc (get_critics_tier — нужна
+    для суммарного клампа ступеней, т.к. из s1 ступень не извлекается).
+
+    Формула (docs/research/research_rotten_tomatoes.md, §4 итоговая;
+    константы RT_* — единая точка тюнинга):
+    - нормализация: rt_norm = rt_score / RT_PERCENT_SCALE (процент → 0–10);
+    - шринк: s2 = score + RT_SHRINK_FACTOR * (rt_norm − score);
+    - ступень rt: +RT_TIER_BONUS при rt_score >= RT_TIER_HIGH,
+      −RT_TIER_BONUS при rt_score <= RT_TIER_LOW, иначе 0;
+    - суммарный кламп ступеней: tier_total = clamp(critics_tier + tier_rt,
+      ±CRITICS_TIER_CLAMP); так как s1 уже включает ступень fc, итог:
+      clamp(s2 − critics_tier + tier_total, RATING_MIN, RATING_MAX).
+
+    Случаи неприменения (возврат score без изменений — обратная
+    совместимость с фазой 0+A1+B5):
+    - rt_score is None (нет IMDb ID, сбой обогащения, выключен флаг Epic B);
+    - is_russian_search (российская ветка не затронута);
+    - нечисловой rt_score/critics_tier (защита от мусорных данных);
+    - score == 0.0 — маркер «нет зрительских рейтингов» (как в A1:
+      отсутствие зрительских данных не порождает оценку из одних критиков).
+
+    rt_score == 0 — валидная провальная оценка (0% «свежести»): шринк к 0.0
+    и ступень −0.3 применяются (OMDb-пайплайн кодирует «нет данных» как None).
+    """
+    if is_russian_search or rt_score is None or score == 0.0:
+        return score
+
+    try:
+        rt = float(rt_score)
+        tier_fc = float(critics_tier)
+    except (TypeError, ValueError):
+        # Нечисловые данные трактуем как «нет оценок» — score без изменений
+        return score
+
+    # Шринк к консенсусу RT: нормализация процента в шкалу 0–10 обязательна
+    rt_norm = rt / RT_PERCENT_SCALE
+    shrunk = score + RT_SHRINK_FACTOR * (rt_norm - score)
+
+    # Ступень Tomatometer «одобрено критиками RT» / «провал»
+    tier_rt = 0.0
+    if rt >= RT_TIER_HIGH:
+        tier_rt = RT_TIER_BONUS
+    elif rt <= RT_TIER_LOW:
+        tier_rt = -RT_TIER_BONUS
+
+    # Суммарный кламп ступеней fc + rt: ±0.3 на обе (не ±0.6)
+    tier_total = max(-CRITICS_TIER_CLAMP, min(CRITICS_TIER_CLAMP, tier_fc + tier_rt))
+
+    return max(RATING_MIN, min(RATING_MAX, shrunk - tier_fc + tier_total))
+
+
+def rerank_with_rt(movies: List[Dict], is_russian_search: bool = False) -> List[Dict]:
+    """Пересортировка финального списка (≤ limit) после обогащения RT (B6).
+
+    Обогащение rt_score выполняется уже после фильтрации/ранжирования
+    кандидатов (контракт B5 — только финал), поэтому RT учитывается здесь:
+    каждому фильму пересчитывается `weighted_score` (s1 → s2, см.
+    apply_rt_to_score), затем список стабильно сортируется по ключу
+    `(country_priority, −weighted_score)` — тому же, что использовал
+    filter_movies_by_quality с prioritize_english_speaking=True. Состав
+    списка не меняется (RT-демотивация не отсеивает фильмы, прошедшие
+    фильтр качества).
+
+    No-op (порядок не трогается):
+    - is_russian_search=True — российская ветка не затронута;
+    - пустой список;
+    - хотя бы у одного фильма `weighted_score` не число: словари без s1
+      (чужие пути выдачи, например одиночные карточки) не пересортировываются.
+
+    Обратная совместимость: если ни у одного фильма нет rt_score, все s2
+    равны s1, а список уже отсортирован этим ключом — стабильная сортировка
+    оставляет порядок идентичным фазе 0+A1+B5.
+    """
+    if is_russian_search or not movies:
+        return movies
+
+    for movie in movies:
+        score = movie.get('weighted_score')
+        if isinstance(score, bool) or not isinstance(score, (int, float)):
+            # Нет данных для пересчёта — порядок выдачи не трогаем
+            return movies
+
+    for movie in movies:
+        critics_tier = movie.get('critics_tier')
+        if isinstance(critics_tier, bool) or not isinstance(critics_tier, (int, float)):
+            critics_tier = 0.0
+        movie['weighted_score'] = apply_rt_to_score(
+            float(movie['weighted_score']),
+            movie.get('rt_score'),
+            critics_tier=float(critics_tier),
+        )
+
+    movies.sort(
+        key=lambda m: (m.get('country_priority', 0), -float(m.get('weighted_score', 0.0)))
+    )
+    return movies
 
 
 def is_music_only_content(movie: Dict) -> bool:

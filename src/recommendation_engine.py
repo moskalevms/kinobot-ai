@@ -7,9 +7,14 @@ from utils.movie_filter import (
     extract_critics_fields,
     extract_imdb_id,
     filter_movies_by_quality,
+    get_country_priority,
+    get_critics_tier,
+    get_weighted_rating,
     is_russian_content,
+    rerank_with_rt,
 )
 from kinopoisk_client import KinopoiskClient
+from rt_enrichment import enrich_movies_with_rt_scores
 
 logger = logging.getLogger(__name__)
 
@@ -231,7 +236,17 @@ class RecommendationEngine:
             # «одобрено критиками» итоговый порядок — по убыванию fc
             filtered.sort(key=lambda m: extract_critics_fields(m)[0] or 0.0, reverse=True)
 
-        return self._format_movies_list(filtered, limit)
+        # Обогащение RT-оценками (Epic B, B5) — только финальный список
+        # (после фильтра качества и обрезки до limit), не кандидаты (до 250)
+        enriched = await enrich_movies_with_rt_scores(
+            session, self._format_movies_list(filtered, limit, is_russian_search)
+        )
+        if not critics_approved:
+            # B6: пересортировка финала по оценке с учётом Tomatometer.
+            # В режиме «одобрено критиками» контракт порядка — убывание fc
+            # (A3), поэтому RT-пересортировка там не применяется.
+            rerank_with_rt(enriched, is_russian_search)
+        return enriched
 
     async def _get_general_recommendations(
         self,
@@ -325,9 +340,19 @@ class RecommendationEngine:
             # «одобрено критиками» итоговый порядок — по убыванию fc
             filtered.sort(key=lambda m: extract_critics_fields(m)[0] or 0.0, reverse=True)
 
-        return self._format_movies_list(filtered, limit)
+        # Обогащение RT-оценками (Epic B, B5) — только финальный список
+        # (после фильтра качества и обрезки до limit), не кандидаты (до 250)
+        enriched = await enrich_movies_with_rt_scores(
+            session, self._format_movies_list(filtered, limit, is_russian_search)
+        )
+        if not critics_approved:
+            # B6: пересортировка финала по оценке с учётом Tomatometer.
+            # В режиме «одобрено критиками» контракт порядка — убывание fc
+            # (A3), поэтому RT-пересортировка там не применяется.
+            rerank_with_rt(enriched, is_russian_search)
+        return enriched
 
-    def _format_movies_list(self, movies: List[Dict], limit: int) -> List[Dict]:
+    def _format_movies_list(self, movies: List[Dict], limit: int, is_russian_search: bool = False) -> List[Dict]:
         formatted: List[Dict] = []
         for movie in movies:
             if len(formatted) >= limit:
@@ -398,6 +423,13 @@ class RecommendationEngine:
                 # IMDb ID из externalId (фаза 1, B3): join-ключ для
                 # обогащения RT-скорами (B5); None у ~31% фильмов.
                 'imdb_id': extract_imdb_id(movie),
+                # Внутренние поля для пересортировки финала с учётом RT
+                # (фаза 1, B6): оценка s1 после критиков (A1), величина
+                # ступени fc для суммарного клампа ступеней и группа
+                # странового приоритета. В UI не выводятся.
+                'weighted_score': get_weighted_rating(movie, is_russian_search),
+                'critics_tier': get_critics_tier(movie),
+                'country_priority': get_country_priority(movie),
                 'description': description,
                 'poster_url': poster_url,
                 'kinopoisk_url': f"https://www.kinopoisk.ru/film/{movie.get('id')}/" if movie.get('id') else None,
