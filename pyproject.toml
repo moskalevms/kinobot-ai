@@ -1,5 +1,9 @@
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Явная фиксация import-mode (значение по умолчанию): гарантия паттерна
+# `from conftest import ...` (design.md D1) — каталог tests/ добавляется в
+# sys.path, и conftest импортируется как тот же модуль, что загружен плагином
+addopts = "--import-mode=prepend"
 
 [tool.ruff]
 line-length = 200
@@ -16,6 +20,7 @@ select = ["E", "F", "W"]
 "scripts/cleanup_stats.py" = ["E402"]
 "src/app.py" = ["E402"]
 "src/telegram_bot.py" = ["E402"]
+"tests/conftest.py" = ["E402"]
 
 [tool.mypy]
 python_version = "3.10"

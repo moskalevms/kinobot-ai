@@ -3,37 +3,13 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from conftest import make_manager as _manager
 from dialogue_manager import (
-    DialogueManager,
     format_movie_card,
     format_rt_badge,
     rt_badge_suffix,
 )
 from guardrails import MESSAGE_MAX_LENGTH, REFUSAL_TOO_LONG
-from session_manager import UserSession
-
-
-class StubSessionManager:
-    """In-memory заглушка менеджера сессий для тестов"""
-
-    def __init__(self):
-        self.sessions = {}
-        self.saved = []
-
-    def get_session(self, user_id):
-        if user_id not in self.sessions:
-            self.sessions[user_id] = UserSession(user_id)
-        return self.sessions[user_id]
-
-    def save_session(self, session):
-        self.saved.append(session.user_id)
-
-    def clear_session(self, user_id):
-        self.sessions.pop(user_id, None)
-
-
-def _manager():
-    return DialogueManager(StubSessionManager())
 
 
 def _run(coro):
@@ -298,15 +274,16 @@ def test_movie_card_contains_badge():
     card = format_movie_card(_movie(rt_score=91))
 
     assert 'с рейтингом 8.8 · 🍅 91%.' in card
-    assert card.startswith('🎬 <strong>Начало</strong> (2010) — фантастика')
-    assert card.endswith('Сон внутри сна')
+    # A7: вердикт ЦЕЛИКОМ жирный (один <strong>), описание — в сворачиваемой цитате
+    assert card.startswith('🎬 <strong>Начало (2010) — фантастика')
+    assert card.endswith('<blockquote expandable>Сон внутри сна</blockquote>')
 
 
 def test_movie_card_without_badge_is_backward_compatible():
-    """Без rt_score текст карточки побайтово прежний (до B7)."""
+    """Без rt_score в вердикте нет разделителя и бейджа (инвариант B7 в формате A7)."""
     assert format_movie_card(_movie()) == (
-        '🎬 <strong>Начало</strong> (2010) — фантастика с рейтингом 8.8.\n'
-        'Сон внутри сна'
+        '🎬 <strong>Начало (2010) — фантастика с рейтингом 8.8.</strong>\n'
+        '<blockquote expandable>Сон внутри сна</blockquote>'
     )
 
 
@@ -350,12 +327,15 @@ def test_list_response_line_with_badge():
 
     response, keyboard = dm._generate_list_response(movies, 'Рекомендации фильма')
 
+    # Формат строки A2: жирное название (без kinopoisk_url — без ссылки),
+    # год, жанр (страны/источника в _movie нет — части опущены), рейтинг
     assert (
-        '1. <strong>Начало</strong> (2010) — ⭐ 8.8 · 🍅 91%\n' in response
+        '1. <b>Начало</b> (2010) · фантастика · ⭐ 8.8 · 🍅 91%\n' in response
     )
     # Бейдж — в конце строки, перенос строки сразу после него
     assert '🍅 91%\n' in response
-    assert len(keyboard.inline_keyboard) == 1
+    # A3: ряд номеров (одна кнопка) + отдельный ряд навигации
+    assert len(keyboard.inline_keyboard) == 2
 
 
 def test_list_response_mixed_badges():
@@ -369,14 +349,19 @@ def test_list_response_mixed_badges():
     response, keyboard = dm._generate_list_response(movies, 'Заголовок')
 
     lines = response.splitlines()
-    assert lines[1] == '1. <strong>Начало</strong> (2010) — ⭐ 8.8 · 🍅 91%'
-    assert lines[2] == '2. <strong>Фильм 2</strong> (2020) — ⭐ 8.0'
+    assert lines[1] == '1. <b>Начало</b> (2010) · фантастика · ⭐ 8.8 · 🍅 91%'
+    assert lines[2] == '2. <b>Фильм 2</b> (2020) · фантастика · ⭐ 8.0'
     assert response.count('🍅') == 1
     assert len(keyboard.inline_keyboard) == 2
 
 
-def test_list_response_without_rt_scores_is_backward_compatible():
-    """Выдача без RT-данных побайтово совпадает с прежним форматом."""
+def test_list_response_without_rt_scores_has_no_badge_traces():
+    """Без RT-данных строка равна формату A2 без суффикса бейджа.
+
+    Разделители « · » между частями строки (жанр/страна, рейтинг) —
+    часть формата списка; следов бейджа нет: ни «🍅», ни завершающего
+    разделителя бейджа в конце строки.
+    """
     dm = _manager()
     movies = [{'id': 1, 'title': 'Фильм 1', 'year': 2020, 'rating': 8.0}]
 
@@ -384,12 +369,14 @@ def test_list_response_without_rt_scores_is_backward_compatible():
 
     assert response == (
         '<strong>Заголовок</strong>\n'
-        '1. <strong>Фильм 1</strong> (2020) — ⭐ 8.0\n'
+        '1. <b>Фильм 1</b> (2020) · ⭐ 8.0\n'
     )
     assert '🍅' not in response
-    assert ' · ' not in response
-    # Кнопки не меняются: бейдж в подпись кнопки не добавляется
-    assert keyboard.inline_keyboard[0][0].text == 'Подробнее: Фильм 1'
+    # Ни одна строка не заканчивается висящим разделителем бейджа
+    assert not any(line.rstrip().endswith('·') for line in response.splitlines())
+    # Подпись кнопки — номер (A3): название фильма в неё не попадает,
+    # поэтому ни «None», ни бейдж в кнопке появиться не могут
+    assert keyboard.inline_keyboard[0][0].text == '1️⃣'
 
 
 def test_list_response_badge_not_in_buttons():

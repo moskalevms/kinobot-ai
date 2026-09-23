@@ -139,8 +139,17 @@ class MovieAgent:
                 'rating': rating_imdb or rating_kp or '—',
                 'rating_imdb': rating_imdb,
                 'rating_kp': rating_kp,
-                'description': (best_match.get('description') or '')[:500],
+                # Описание НЕ режется «на глаз» (прежний срез [:500] убран):
+                # бюджет caption (1024) обеспечивает единая сборка карточки
+                # `build_movie_card`, общая для info-интента и callback `info:`.
+                # Без этого текст карточки одного фильма в двух путях разъезжался
+                # (прямое требование A4 / дельта-спека movie-card-presentation).
+                'description': best_match.get('description') or '',
                 'poster_url': poster_url,
+                # Ссылка на Кинопоиск строится ПОБАЙТОВО как в движке выдачи
+                # (recommendation_engine.py) и в callback-пути (telegram_bot):
+                # без неё у карточки info-интента не было бы кнопки «🔗 Кинопоиск».
+                'kinopoisk_url': f"https://www.kinopoisk.ru/film/{best_match.get('id')}/" if best_match.get('id') else None,
                 # IMDb ID из externalId (фаза 1, B3) — join-ключ для RT (B5)
                 'imdb_id': extract_imdb_id(best_match)
             }

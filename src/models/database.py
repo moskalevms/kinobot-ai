@@ -91,6 +91,48 @@ class RtScore(db.Model):
         return f'<RtScore {self.imdb_id} rt={self.rt_score} meta={self.metascore}>'
 
 
+class Watchlist(db.Model):
+    """Список сохранённых фильмов пользователя «📌 Мой список» (Epic B, задача B4).
+
+    Пара (user_id, kinopoisk_id) уникальна на уровне схемы — повторное
+    сохранение того же фильма не создаёт вторую запись (идемпотентность
+    гарантируется БД, а не приложением: гонка двух одновременных тапов
+    безопасна). user_id — строковый id из str(update.effective_user.id),
+    согласованно с DialogueSession.user_id.
+
+    added_at — момент добавления: DateTime(timezone=True) даёт TIMESTAMPTZ
+    в PostgreSQL и DATETIME в SQLite (переносимость для тестов), значение
+    всегда проставляет ORM (aware-UTC), server_default=func.now() — защита
+    для вставок в обход ORM, чтобы колонка NOT NULL не осталась пустой
+    (образец — RtScore.fetched_at).
+
+    Единственный источник схемы: init_db.py импортирует модели из этого
+    модуля и создаёт таблицу watchlist вызовом db.create_all() —
+    дублирования определений нет (см. openspec change add-watchlist).
+    """
+    __tablename__ = 'watchlist'
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.String(255), nullable=False, index=True)
+    kinopoisk_id = db.Column(db.Integer, nullable=False)
+    title = db.Column(db.String(500), nullable=False)
+    year = db.Column(db.Integer, nullable=True)
+    poster_url = db.Column(db.String(1000), nullable=True)
+    added_at = db.Column(
+        db.DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        server_default=func.now(),
+        nullable=False,
+    )
+
+    __table_args__ = (
+        db.UniqueConstraint('user_id', 'kinopoisk_id', name='unique_user_movie'),
+    )
+
+    def __repr__(self) -> str:
+        return f'<Watchlist user={self.user_id} film={self.kinopoisk_id} «{self.title}»>'
+
+
 class UserStatistics(db.Model):
     __tablename__ = 'user_statistics'
 

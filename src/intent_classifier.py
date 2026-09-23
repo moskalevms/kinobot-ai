@@ -3,7 +3,7 @@ import re
 import json
 import logging
 import os
-from typing import Dict, Any
+from typing import Dict, Any, List, Optional
 
 from llm_router import LLMRouter
 from guardrails import (
@@ -20,6 +20,11 @@ class IntentClassifier:
     def __init__(self, llm_router: LLMRouter, prompts_dir: str):
         self.llm_router = llm_router
         self.prompts_dir = prompts_dir
+        # B5: кэш системного промпта — загружается с диска один раз на процесс,
+        # далее возвращается один и тот же объект str. Это гарантирует побайтовую
+        # идентичность статического префикса между запросами (условие префиксного
+        # кэширования у провайдера) и убирает повторный ввод-вывод.
+        self._system_prompt_cache: Optional[str] = None
         logger.info(f"IntentClassifier инициализирован с папкой промптов: {prompts_dir}")
 
     def _load_prompt(self, filename: str) -> str:
@@ -36,16 +41,52 @@ class IntentClassifier:
             logger.error(f"Ошибка загрузки промпта {filename}: {e}")
             return ""
 
+    def _get_system_prompt(self) -> str:
+        """Системный промпт классификации с ленивым кэшем (B5).
+
+        Успешно загруженный промпт кэшируется, поэтому все последующие запросы
+        получают побайтово идентичный префикс. Пустой результат (файл отсутствует
+        или ошибка чтения) НЕ кэшируется — следующий вызов повторит загрузку,
+        сохраняя прежнее поведение fallback-классификации при временно
+        недоступном промпте.
+        """
+        if self._system_prompt_cache is None:
+            prompt = self._load_prompt('parameter_extraction_prompt.txt')
+            if prompt:
+                self._system_prompt_cache = prompt
+            return prompt
+        return self._system_prompt_cache
+
+    def build_classification_messages(
+        self, message: str, context: Optional[Dict[str, Any]] = None
+    ) -> List[Dict[str, str]]:
+        """Сборка сообщений LLM со стабильным префиксом (B5).
+
+        Порядок жёстко фиксирован: статический системный промпт — строго ПЕРВЫМ
+        сообщением, весь динамический контент (запрос пользователя и
+        напоминание-«сэндвич» из guardrails.build_user_content) — строго ПОСЛЕ
+        префикса, в user-сообщении. Никаких дат/рандома/итераций по коллекциям в
+        начале messages. Параметр context (история/параметры сессии) в сообщения
+        пока не подставляется — как и раньше; он оставлен в сигнатуре, чтобы
+        будущее расширение (C1/C2) не меняло порядок «статика → динамика».
+        """
+        return [
+            {"role": "system", "content": self._get_system_prompt()},
+            {"role": "user", "content": build_user_content(message)},
+        ]
+
     async def classify_with_llm(self, session, message: str, context: Dict[str, Any]) -> Dict[str, Any]:
         try:
-            system_prompt = self._load_prompt('parameter_extraction_prompt.txt')
+            # Системный промпт проверяем напрямую (локальная переменная),
+            # без обращения по индексу messages[0]: порядок «system строго
+            # первым» гарантирует build_classification_messages, а кэш B5
+            # делает повторную загрузку промпта внутри него бесплатной.
+            system_prompt = self._get_system_prompt()
             if not system_prompt:
                 logger.warning("Не удалось загрузить системный промпт, используем упрощенную классификацию")
                 return self._classify_fallback(message)
-            messages = [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": build_user_content(message)},
-            ]
+
+            messages = self.build_classification_messages(message, context)
 
             response = await self.llm_router.call_llm(session, messages, max_tokens=250)
             if not response:
