@@ -133,6 +133,143 @@ class Watchlist(db.Model):
         return f'<Watchlist user={self.user_id} film={self.kinopoisk_id} «{self.title}»>'
 
 
+class MovieFeedback(db.Model):
+    """Обратная связь пользователя по фильму: реакция и/или оценка (Epic B, задача B5).
+
+    Ряд фидбека карточки — «⭐ Оценить» (панель 1–10), «✅ Смотрел» и
+    «❌ Не моё» — пишется ОДНОЙ строкой на пару (user_id, kinopoisk_id):
+    пара уникальна на уровне схемы, повторный тап ОБНОВЛЯет строку
+    (upsert-семантика менеджера), а не плодит дубли. reaction
+    ('watched'/'nope') и rating (1–10) — независимые колонки одного
+    состояния пользователя по фильму (NULL — значение не оставлено);
+    диапазон оценки дополнительно закреплён CHECK-ограничением
+    (переносимо: соблюдается и в PostgreSQL, и в SQLite-тестах).
+    user_id — строковый id из str(update.effective_user.id), согласованно
+    с Watchlist.user_id/DialogueSession.user_id.
+
+    created_at/updated_at — DateTime(timezone=True): TIMESTAMPTZ в
+    PostgreSQL и DATETIME в SQLite (переносимость для тестов), значения
+    проставляет ORM (aware-UTC), server_default=func.now() — защита для
+    вставок в обход ORM (образец — RtScore.fetched_at). updated_at
+    обновляется при каждом изменении строки (onupdate) — свежесть
+    фидбека для будущей персонализации (задача C5; ранжирование в B5
+    не меняется).
+
+    Единственный источник схемы: init_db.py импортирует модели из этого
+    модуля и создаёт таблицу movie_feedback вызовом db.create_all() —
+    дублирования определений нет (см. openspec change add-movie-feedback).
+    """
+    __tablename__ = 'movie_feedback'
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.String(255), nullable=False, index=True)
+    kinopoisk_id = db.Column(db.Integer, nullable=False)
+    reaction = db.Column(db.String(16), nullable=True)
+    rating = db.Column(db.SmallInteger, nullable=True)
+    created_at = db.Column(
+        db.DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        server_default=func.now(),
+        nullable=False,
+    )
+    updated_at = db.Column(
+        db.DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+        server_default=func.now(),
+        nullable=False,
+    )
+
+    __table_args__ = (
+        db.UniqueConstraint('user_id', 'kinopoisk_id', name='unique_user_movie_feedback'),
+        db.CheckConstraint(
+            'rating IS NULL OR (rating >= 1 AND rating <= 10)',
+            name='movie_feedback_rating_range',
+        ),
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f'<MovieFeedback user={self.user_id} film={self.kinopoisk_id} '
+            f'reaction={self.reaction} rating={self.rating}>'
+        )
+
+
+class OfftopicRefusal(db.Model):
+    """Метрики офтопик-отказов guardrails (Epic B, задача B7).
+
+    Строка — ОДНО событие отказа: precheck (причины 'length',
+    'prompt_attack', 'offtopic') или отказ LLM-классификатора
+    ('llm_offtopic'). message_fragment — ПРИВАТНОСТЬ: хранится только
+    усечённый фрагмент сообщения (≤120 символов, та же граница, что в
+    guardrails.log_blocked), полный ввод и системный промпт в БД не
+    попадают. user_id — строковый id из str(update.effective_user.id)
+    (бот) или ключ веб-сессии, согласованно с DialogueSession.user_id.
+
+    created_at — момент фиксации: DateTime(timezone=True) даёт TIMESTAMPTZ
+    в PostgreSQL и DATETIME в SQLite (переносимость для тестов), значение
+    всегда проставляет ORM (aware-UTC), server_default=func.now() —
+    защита для вставок в обход ORM (образец — RtScore.fetched_at).
+    Индекс по created_at — фильтру периода в агрегации топ-N отказов.
+
+    Единственный источник схемы: init_db.py импортирует модели из этого
+    модуля и создаёт таблицу offtopic_refusals вызовом db.create_all() —
+    дублирования определений нет (см. openspec change
+    add-offtopic-metrics-b7).
+    """
+    __tablename__ = 'offtopic_refusals'
+
+    # Граница усечения фрагмента — единый источник для модели и трекера
+    # записи (refusal_tracker.record_refusal); совпадает с log_blocked.
+    FRAGMENT_LIMIT = 120
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.String(255), nullable=False, index=True)
+    reason = db.Column(db.String(32), nullable=False)
+    message_fragment = db.Column(db.String(FRAGMENT_LIMIT), nullable=False)
+    created_at = db.Column(
+        db.DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        server_default=func.now(),
+        nullable=False,
+        index=True,
+    )
+
+    @staticmethod
+    def get_top_fragments(cutoff, limit=50):
+        """Топ-N заблокированных фрагментов за период (для админки, B7).
+
+        Группировка по (фрагмент, причина): одинаковые посторонние
+        запросы разных пользователей дают одну строку со счётчиком —
+        повторяющиеся ложные срабатывания видны по данным, а не по
+        жалобам. last_seen — момент последней фиксации (max created_at).
+        Фильтр created_at >= cutoff отсекает записи вне периода.
+        Порядок детерминирован: count desc, затем last_seen desc —
+        при равных счётчиках топ-N не «мерцает» между запросами
+        (стандартные count/max переносимы для SQLite и PostgreSQL).
+        Возвращает строки-кортежи (fragment, reason, count, last_seen) —
+        примитивы/detached-значения, безопасные вне SQLAlchemy-сессии.
+        Вызывается внутри app_context (образец — get_daily_stats).
+        """
+        return db.session.query(
+            OfftopicRefusal.message_fragment,
+            OfftopicRefusal.reason,
+            func.count(OfftopicRefusal.id).label('total'),
+            func.max(OfftopicRefusal.created_at).label('last_seen'),
+        ).filter(
+            OfftopicRefusal.created_at >= cutoff
+        ).group_by(
+            OfftopicRefusal.message_fragment,
+            OfftopicRefusal.reason,
+        ).order_by(
+            func.count(OfftopicRefusal.id).desc(),
+            func.max(OfftopicRefusal.created_at).desc(),
+        ).limit(limit).all()
+
+    def __repr__(self) -> str:
+        return f'<OfftopicRefusal user={self.user_id} reason={self.reason} «{self.message_fragment[:30]}»>'
+
+
 class UserStatistics(db.Model):
     __tablename__ = 'user_statistics'
 

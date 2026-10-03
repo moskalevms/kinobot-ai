@@ -5,6 +5,7 @@ import html
 import os
 import logging
 import random
+import re
 
 from typing import Dict, Any, List, Optional
 from movie_agent import MovieAgent
@@ -19,6 +20,7 @@ from guardrails import (
     precheck_message,
     sanitize_message,
 )
+from refusal_tracker import record_refusal
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 logger = logging.getLogger(__name__)
@@ -106,6 +108,13 @@ MOVIE_CARD_CAPTION_LIMIT = 1024
 # id фильма) и возврат к списку (с A5 доставляется редактированием
 # сообщения — изменение add-blockquote-card-and-edit-callbacks).
 CARD_LINK_BUTTON_TEXT = '🔗 Кинопоиск'
+# Кнопка трейлера (фаза 2, C3): url-кнопка, добавляется ТОЛЬКО при
+# валидном trailer_url. Эмодзи ▶️ закреплён за смыслом «трейлер» в
+# docs/emoji_guideline.md. Сегодня API v1.4 поле videos не заполняет
+# (разведка 2026-09-24), поэтому в проде кнопка не появляется —
+# незаметная деградация; механизм forward-compatible (design.md D1
+# изменения add-trailer-and-provider-buttons).
+CARD_TRAILER_BUTTON_TEXT = '▶️ Трейлер'
 CARD_SIMILAR_BUTTON_TEXT = '🎬 Похожие'
 CARD_BACK_BUTTON_TEXT = '⬅️ К списку'
 CARD_BACK_CALLBACK = 'back:list'
@@ -168,6 +177,85 @@ WATCHLIST_HEADER = '📌 Мой список:'
 # Заглушка пустого списка (B7: без dead-end — объяснение + мгновенное
 # действие «🎲 Случайный фильм» существующего маршрута random:movie).
 WATCHLIST_EMPTY_TEXT = '📌 Список пуст — добавьте фильмы кнопкой «📌 Сохранить» в карточках.'
+
+# --- Обратная связь нейтральными эмодзи (фаза 3, B5, add-movie-feedback) ---
+# Ряд фидбека карточки: «⭐ Оценить» открывает панель оценки 1–10,
+# «✅ Смотрел» и «❌ Не моё» — мгновенные реакции. Нейтральные эмодзи
+# вместо рискованных «палец вверх/вниз» (отчёт §2.3: пассивная агрессия;
+# смысл ❌ закреплён docs/emoji_guideline.md).
+# Рендер клавиатуры карточки НЕ ходит в БД: ряд присутствует всегда,
+# состояние сохранённого фидбека подтверждает ОТВЕТ маршрута fb:, а не
+# подмена подписи (паттерн — design.md D3 изменения add-watchlist).
+FEEDBACK_RATE_BUTTON_TEXT = '⭐ Оценить'
+FEEDBACK_WATCHED_BUTTON_TEXT = '✅ Смотрел'
+FEEDBACK_NOPE_BUTTON_TEXT = '❌ Не моё'
+# Префикс callback-маршрута фидбека и сегменты действий (диспетчер бота
+# маршрутизирует по префиксу fb:, внутри маршрута — по действию). Формы:
+# fb:rate:{id} — панель оценки, fb:score:{id}:{n} — выбор оценки,
+# fb:watched:{id} / fb:nope:{id} — реакции (сегмент действия СОВПАДАЕТ со
+# значением колонки reaction — единый литерал кнопки/маршрута/записи),
+# fb:clear:{id} — сброс оценки. Все callback_data короткие (≤64 байт):
+# «fb:score:» + до 10 цифр id + «:» + до 2 цифр оценки.
+FEEDBACK_CALLBACK_PREFIX = 'fb:'
+FEEDBACK_RATE_ACTION = 'rate'
+FEEDBACK_SCORE_ACTION = 'score'
+FEEDBACK_WATCHED_ACTION = 'watched'
+FEEDBACK_NOPE_ACTION = 'nope'
+FEEDBACK_CLEAR_ACTION = 'clear'
+# Шкала оценки и раскладка панели: кнопки-числа — ОБЫЧНЫЕ цифры (эмодзи-
+# цифры 1️⃣…🔟 закреплены гайдлайном за позициями выдачи), по 5 в ряду.
+FEEDBACK_RATING_MIN = 1
+FEEDBACK_RATING_MAX = 10
+FEEDBACK_RATING_BUTTONS_PER_ROW = 5
+# Приглашение панели оценки (⭐ — «зрительский рейтинг» по гайдлайну,
+# эмодзи в начале фразы, текстовая подпись рядом — правило доступности).
+FEEDBACK_RATING_PROMPT = '⭐ Выберите оценку от 1 до 10:'
+# Действия панели: сброс оценки (🗑️ зарезервирован гайдлайном под B5) и
+# возврат к карточке — существующим маршрутом info:{id}, без новой сущности.
+FEEDBACK_CLEAR_BUTTON_TEXT = '🗑️ Сбросить оценку'
+FEEDBACK_BACK_BUTTON_TEXT = '⬅️ Назад'
+# Кнопка возврата к карточке в подтверждении фидбека («✅ Сохранено.»);
+# второй выход — «⬅️ К списку» (back:list) из констант бота.
+FEEDBACK_CARD_BUTTON_TEXT = '🎬 Карточка'
+
+# --- Ответ на приглашение «по настроению» (B1, fix-mood-offtopic-b1) ---
+# Служебный признак ожидания ответа о настроении. Хранится ВНУТРИ
+# существующего JSON-поля сессии `last_params` (ключ с префиксом «_» —
+# маркер служебного значения, отличающий его от параметров поиска),
+# поэтому схема БД не меняется и дубли моделей (src/models/database.py +
+# init_db.py) синхронизировать не нужно (design.md D1).
+# Устанавливают его точки отправки mood-приглашения в telegram_bot.py,
+# считывает и СРАЗУ сбрасывает `DialogueManager.process_message` (D5).
+AWAITING_MOOD_KEY = '_awaiting_mood'
+# Порог «короткого ответа» в словах: односложный ответ-настроение
+# («устал», «хочу адреналина») идёт детерминированным маршрутом, а
+# развёрнутый запрос — обычной классификацией, чтобы слово-триггер
+# внутри длинного запроса не подменял извлечение параметров (D2).
+MOOD_ANSWER_MAX_WORDS = 5
+# Порог «короткого сообщения» mood-префильтра (add-mood-prefilter-b6, D1/D4):
+# в отличие от ветки `_awaiting_mood` (подстрочное совпадение, ≤5 слов)
+# префильтр работает БЕЗ признака ожидания настроения, но зато требует
+# ТОЧНОГО совпадения со словарём, поэтому порог уже — 3 слова. Всё, что
+# длиннее или не совпало точно («устал от жизни»), уходит в LLM-пайплайн.
+MOOD_PREFILTER_MAX_WORDS = 3
+
+# Символы, снимаемые при нормализации для mood-префильтра: любая пунктуация
+# и прочий не-текст (regex `[^\w\s]`, `\w` unicode-ный — кириллица входит).
+_MOOD_PUNCTUATION_RE = re.compile(r'[^\w\s]+', re.UNICODE)
+
+
+def _normalize_mood_text(text: str) -> str:
+    """Нормализация текста для детерминированного mood-префильтра (D2).
+
+    Приводит к нижнему регистру, снимает пунктуацию, унифицирует «ё»→«е»
+    (в словаре `mood_triggers` есть фразы через «ё» — «весёл»,
+    «напряжённый», а пользователь может писать через «е») и схлопывает
+    пробелы. Нормализация применяется к ОБЕИМ сторонам сопоставления —
+    сообщению и фразам словаря.
+    """
+    lowered = (text or '').lower().replace('ё', 'е')
+    without_punct = _MOOD_PUNCTUATION_RE.sub(' ', lowered)
+    return ' '.join(without_punct.split())
 
 
 def truncate_button_text(text: Optional[str], limit: int = BUTTON_TEXT_LIMIT) -> str:
@@ -484,23 +572,109 @@ def build_movie_card_keyboard(movie: Dict[str, Any]) -> InlineKeyboardMarkup:
 
     Состав: «🔗 Кинопоиск» — url-кнопка, добавляется ТОЛЬКО при валидной
     ссылке (непустая и начинается с `http`, та же проверка, что у постера);
+    «▶️ Трейлер» — url-кнопка СРАЗУ ПОСЛЕ «🔗 Кинопоиск» при валидном
+    `trailer_url` (фаза 2, C3; та же проверка `http` — сегодня API videos
+    не заполняет и кнопки нет, клавиатура идентична прежней);
     «🎬 Похожие» — callback `similar:{id}` существующего similar-интента;
     «📌 Сохранить» — callback `save:{id}` (watchlist B4: сохранение фильма
     в PostgreSQL, дубль даёт ответ «Уже в списке» без второй записи);
     «⬅️ К списку» — callback `back:list` (пересборка списка из сессии).
     Все `callback_data` короткие — запас до лимита Bot API (64 байта)
     многократный. При CARD_BUTTONS_PER_ROW=2 четыре кнопки дают два ровных
-    ряда (с url-кнопкой — три), подписи с эмодзи не ужимаются Telegram.
+    ряда (с url-кнопками — три), подписи с эмодзи не ужимаются Telegram.
+    После основных рядов при непустом `watch_providers` добавляется ряд
+    url-кнопок стриминг-провайдеров «где смотреть» (фаза 2, C4): подписи —
+    имена провайдеров БЕЗ эмодзи (бренды самодостаточны) через
+    `truncate_button_text`, ≤ WATCH_PROVIDERS_LIMIT кнопок в ряду.
+    Последним рядом ВСЕГДА добавляется ряд фидбека B5 («⭐ Оценить» /
+    «✅ Смотрел» / «❌ Не моё», `build_feedback_row`) — независимо от
+    сохранённого состояния (рендер без БД); ряд провайдеров размещается
+    ПЕРЕД ним (design.md D4 изменения add-trailer-and-provider-buttons).
     """
     movie_id = movie.get('id') or 0
     buttons: List[InlineKeyboardButton] = []
     url = str(movie.get('kinopoisk_url') or '').strip()
     if url.startswith('http'):
         buttons.append(InlineKeyboardButton(CARD_LINK_BUTTON_TEXT, url=url))
+    # Кнопка трейлера (C3): та же валидация `http`, что у «🔗 Кинопоиск»;
+    # без валидной ссылки кнопки нет — раскладка основных рядов не меняется
+    trailer_url = str(movie.get('trailer_url') or '').strip()
+    if trailer_url.startswith('http'):
+        buttons.append(InlineKeyboardButton(CARD_TRAILER_BUTTON_TEXT, url=trailer_url))
     buttons.append(InlineKeyboardButton(CARD_SIMILAR_BUTTON_TEXT, callback_data=f'similar:{movie_id}'))
     buttons.append(InlineKeyboardButton(CARD_SAVE_BUTTON_TEXT, callback_data=f'{SAVE_CALLBACK_PREFIX}{movie_id}'))
     buttons.append(InlineKeyboardButton(CARD_BACK_BUTTON_TEXT, callback_data=CARD_BACK_CALLBACK))
     rows = [buttons[i:i + CARD_BUTTONS_PER_ROW] for i in range(0, len(buttons), CARD_BUTTONS_PER_ROW)]
+    # Ряд провайдеров «где смотреть» (C4): только при непустом списке,
+    # ПЕРЕД рядом фидбека (фидбек остаётся нижним — инвариант B5).
+    # Имена провайдеров идут в ТЕКСТ кнопки (не в HTML) — достаточно
+    # truncate_button_text без html.escape.
+    providers = movie.get('watch_providers')
+    if isinstance(providers, list) and providers:
+        provider_buttons: List[InlineKeyboardButton] = []
+        for provider in providers:
+            if not isinstance(provider, dict):
+                continue
+            provider_url = str(provider.get('url') or '').strip()
+            provider_name = str(provider.get('name') or '').strip()
+            if not provider_name or not provider_url.startswith('http'):
+                continue
+            provider_buttons.append(InlineKeyboardButton(
+                truncate_button_text(provider_name), url=provider_url
+            ))
+        if provider_buttons:
+            rows.append(provider_buttons)
+    # Ряд обратной связи (B5) — ВСЕГДА нижним отдельным рядом после основных
+    # рядов карточки: три короткие кнопки «⭐ Оценить» / «✅ Смотрел» /
+    # «❌ Не моё». Рендер НЕ ходит в БД (состояние сохранённого фидбека
+    # подтверждает ответ маршрута fb:, а не подпись кнопки) — карточка
+    # собирается одинаково и при недоступном хранилище.
+    rows.append(build_feedback_row(movie_id))
+    return InlineKeyboardMarkup(rows)
+
+
+def build_feedback_row(movie_id: int) -> List[InlineKeyboardButton]:
+    """Нижний ряд фидбека карточки: три нейтральные кнопки обратной связи (B5).
+
+    «⭐ Оценить» открывает панель оценки 1–10 (`fb:rate:{id}`), «✅ Смотрел»
+    и «❌ Не моё» — мгновенные реакции (`fb:watched:{id}` / `fb:nope:{id}`);
+    сегменты watched/nope совпадают со значениями колонки reaction.
+    Все callback_data короткие: «fb:watched:» + id — многократно меньше
+    лимита Bot API (64 байта).
+    """
+    return [
+        InlineKeyboardButton(FEEDBACK_RATE_BUTTON_TEXT, callback_data=f'{FEEDBACK_CALLBACK_PREFIX}{FEEDBACK_RATE_ACTION}:{movie_id}'),
+        InlineKeyboardButton(FEEDBACK_WATCHED_BUTTON_TEXT, callback_data=f'{FEEDBACK_CALLBACK_PREFIX}{FEEDBACK_WATCHED_ACTION}:{movie_id}'),
+        InlineKeyboardButton(FEEDBACK_NOPE_BUTTON_TEXT, callback_data=f'{FEEDBACK_CALLBACK_PREFIX}{FEEDBACK_NOPE_ACTION}:{movie_id}'),
+    ]
+
+
+def build_feedback_rating_keyboard(movie_id: int) -> InlineKeyboardMarkup:
+    """Клавиатура панели оценки фильма 1–10 (B5, открывает «⭐ Оценить»).
+
+    Чистый рендер без обращения к БД: два ряда обычных цифр (1–5 и 6–10)
+    с callback `fb:score:{id}:{n}` (эмодзи-цифры НЕ используются — они
+    закреплены гайдлайном за позициями выдачи), нижний ряд — «🗑️ Сбросить
+    оценку» (`fb:clear:{id}`) и «⬅️ Назад» к карточке существующим маршрутом
+    `info:{id}` (без новой сущности навигации). Раскладка выводится из
+    констант шкалы и размера ряда, поэтому изменение диапазона/плотности
+    не требует правки разметки.
+    """
+    numbers = list(range(FEEDBACK_RATING_MIN, FEEDBACK_RATING_MAX + 1))
+    rows: List[List[InlineKeyboardButton]] = [
+        [
+            InlineKeyboardButton(
+                str(n),
+                callback_data=f'{FEEDBACK_CALLBACK_PREFIX}{FEEDBACK_SCORE_ACTION}:{movie_id}:{n}',
+            )
+            for n in numbers[i:i + FEEDBACK_RATING_BUTTONS_PER_ROW]
+        ]
+        for i in range(0, len(numbers), FEEDBACK_RATING_BUTTONS_PER_ROW)
+    ]
+    rows.append([
+        InlineKeyboardButton(FEEDBACK_CLEAR_BUTTON_TEXT, callback_data=f'{FEEDBACK_CALLBACK_PREFIX}{FEEDBACK_CLEAR_ACTION}:{movie_id}'),
+        InlineKeyboardButton(FEEDBACK_BACK_BUTTON_TEXT, callback_data=f'info:{movie_id}'),
+    ])
     return InlineKeyboardMarkup(rows)
 
 
@@ -640,6 +814,97 @@ class DialogueManager:
             'умный': ['драма', 'исторический', 'психологический']
         }
 
+        # Словарь настроений — ЕДИНЫЙ источник (fix-mood-offtopic-b1, D3):
+        # раньше жил локально в `_handle_general_request`, из-за чего
+        # детерминированный mood-маршрут в `process_message` пришлось бы
+        # дублировать. Ключи совпадают с ключами `mood_to_genre` выше.
+        self.mood_triggers = {
+            # Аудит B4 (audit-mood-dictionary-b4, D1): «хандра» из бэклога;
+            # основа «тоск» вместо «тоска» — покрывает «тоска»/«тоскливо»/
+            # «тоскливое» одной фразой. Инвариант «ключи == mood_to_genre»
+            # зафиксирован тестом tests/test_mood_audit_b4.py, не только
+            # этим комментарием.
+            'грустн': ['грустн', 'плохое настроение', 'поднять настроение', 'грущу', 'грусть', 'хочу радости',
+                       'подавлен', 'депресс', 'тоск', 'печал', 'уныл', 'хандра'],
+            # Аудит B4: основа «весёл» (через «ё») ОБЯЗАТЕЛЬНА — пример
+            # «весёлое» из _MOOD_PROMPT_HTML не совпадал с «весел» и давал
+            # ложный offtopic-отказ (пойман тестом test_mood_audit_b4.py).
+            'весел': ['весел', 'весёл', 'смех', 'смешн', 'посмеяться', 'радост', 'хорошее настроение', 'радость',
+                      'настроение отличное', 'счастлив', 'улыбк', 'забавн', 'юмор'],
+            # Аудит B4 (D1): синонимы усталости из бэклога («выдохся»,
+            # «без сил», «выжат», «нет сил») + «обессил» (накрывает
+            # «обессилен(а)»). Ложные positive на длинных сообщениях
+            # ограничены mood-маршрутом: только ≤5 слов при активном
+            # `_awaiting_mood` (fix-mood-offtopic-b1, D2).
+            'устал': ['устал', 'выгор', 'энергии нет', 'отдохнуть', 'расслабиться', 'спокойн', 'тихий вечер',
+                      'ничего напряжённого', 'без экшена', 'лёгкий фильм', 'выдохся', 'без сил', 'выжат',
+                      'нет сил', 'обессил'],
+            'скучно': ['скучно', 'нечего смотреть', 'занять себя', 'развлечься', 'что-то интересное', 'надоело всё',
+                       'ищу что-то новое'],
+            'страшн': ['страшн', 'испуг', 'боюсь', 'ужас', 'мистик', 'триллер', 'пуга', 'жутк', 'напряг', 'напряжённый',
+                       'напрячь нервы', 'щекотка для нервов'],
+            'романт': ['романт', 'влюблен', 'любовь', 'пара', 'вдвоем', 'нежн', 'сердечко', 'романтический вечер',
+                       'чувств', 'влюблённость'],
+            'адреналин': ['адреналин', 'экшн', 'боевик', 'напряжение', 'динамик', 'крутой', 'взрывы', 'гонки', 'погони',
+                          'герои', 'спасение мира'],
+            'умный': ['умный', 'глубок', 'философ', 'мысл', 'интеллектуальн', 'осмысл', 'не для всех', 'сложный',
+                      'мозг', 'рефлексия', 'медитативн']
+        }
+
+    def _detect_mood_key(self, message_lower: str) -> Optional[str]:
+        """Ключ настроения по тексту в нижнем регистре либо None (D3).
+
+        Семантика совпадает с прежним инлайн-циклом в
+        `_handle_general_request`: первое совпадение любой фразы словаря
+        `self.mood_triggers` (порядок обхода словаря сохраняется). Хелпер
+        нужен, чтобы детерминированный mood-маршрут `process_message`
+        (fix-mood-offtopic-b1) и подбор жанров в `_handle_general_request`
+        определяли настроение ОДИНАКОВО — из одного источника.
+        """
+        for mood_key, phrases in self.mood_triggers.items():
+            if any(phrase in message_lower for phrase in phrases):
+                return mood_key
+        return None
+
+    def _match_mood_prefilter(self, message: str) -> Optional[str]:
+        """Ключ настроения для детерминированного префильтра B6 либо None.
+
+        В отличие от `_detect_mood_key` (первое ПОДСТРОЧНОЕ совпадение,
+        используется веткой `_awaiting_mood` и подбором жанров) здесь —
+        КОНСЕРВАТИВНОЕ сопоставление (add-mood-prefilter-b6, D3), чтобы
+        детерминированный слой не расходился с LLM на неоднозначных вводах:
+
+        1. нормализованное сообщение (≤ `MOOD_PREFILTER_MAX_WORDS` слов)
+           ТОЧНО равно нормализованной фразе словаря («устал», «тихий вечер»);
+        2. сообщение — ОДНО слово, начинающееся с однокоренной фразы-основы
+           словаря («грустно» → «грустн», «весёлое» → «весел»): словарь
+           хранит основы, поэтому без правила словоформы примеры
+           приглашения «грустное»/«романтическое» префильтр не покрыл бы.
+
+        Правило 2 НАМЕРЕННО не применяется к многословным сообщениям:
+        «устал от жизни» (3 слова, не точное совпадение) префильтром не
+        распознаётся и уходит в обычный LLM-пайплайн. Порядок обхода —
+        как в `_detect_mood_key` (первое совпадение по порядку словаря).
+        """
+        normalized = _normalize_mood_text(message)
+        if not normalized:
+            return None
+        words = normalized.split()
+        if len(words) > MOOD_PREFILTER_MAX_WORDS:
+            return None
+        single_word = len(words) == 1
+        for mood_key, phrases in self.mood_triggers.items():
+            for phrase in phrases:
+                norm_phrase = _normalize_mood_text(phrase)
+                if not norm_phrase:
+                    continue
+                if normalized == norm_phrase:
+                    return mood_key
+                # Словоформа одиночного слова: основа — фраза БЕЗ пробелов
+                if single_word and ' ' not in norm_phrase and normalized.startswith(norm_phrase):
+                    return mood_key
+        return None
+
     def _load_prompt(self, filename: str) -> str:
         path = os.path.join(self.prompts_dir, filename)
         try:
@@ -655,6 +920,15 @@ class DialogueManager:
             block_reason = precheck_message(message)
             if block_reason is not None:
                 log_blocked(user_id, block_reason, message)
+                # Персистентная метрика отказа (B7): запись в БД рядом с
+                # журналом, fail-silent и вне event loop (образец —
+                # save_session ниже). app — приложение менеджера сессий
+                # (веб отдаёт полное, бот — минимальное; у тестовых стабов
+                # его нет → трекер создаст своё ленивое).
+                await asyncio.to_thread(
+                    record_refusal, user_id, block_reason, message,
+                    getattr(self.session_manager, '_app', None),
+                )
                 return {
                     "response": get_refusal_text(block_reason),
                     "needs_clarification": False
@@ -662,16 +936,78 @@ class DialogueManager:
 
             # Синхронные обращения к БД уводим из event loop в поток
             session = await asyncio.to_thread(self.session_manager.get_session, user_id)
-            intent_params = await self.intent_classifier.classify_with_llm(
-                http_session,
-                message,
-                {'last_movies': session.last_movies, 'last_params': session.last_params}
-            )
+
+            # Признак ожидания ответа о настроении (fix-mood-offtopic-b1, D5).
+            # pop() сбрасывает его при ПЕРВОЙ ЖЕ обработке сообщения — во всех
+            # ветках (mood-маршрут, обычный пайплайн, исключение ниже), поэтому
+            # признак одноразовый и не «залипает» на следующий запрос. Сброс
+            # выполняется ДО формирования контекста классификатора: служебный
+            # ключ не попадает ни в промпт LLM, ни в сохранённые параметры.
+            awaiting_mood = bool(session.last_params.pop(AWAITING_MOOD_KEY, None))
+
+            intent_params: Optional[Dict[str, Any]] = None
+            if awaiting_mood and len(message.split()) <= MOOD_ANSWER_MAX_WORDS:
+                # Детерминированный mood-маршрут (D2) — основная защита от
+                # ложного отказа: односложный ответ на приглашение «Какое у
+                # вас сейчас настроение?» («устал») LLM-классификатор трактует
+                # как offtopic, а словарь настроений в `_handle_general_request`
+                # при таком интенте недостижим. Сопоставление — тем же
+                # `_detect_mood_key`, что и в подборе жанров (единый источник).
+                mood_key = self._detect_mood_key(message.lower())
+                if mood_key is not None:
+                    logger.info(
+                        f"Ответ на приглашение о настроении: mood='{mood_key}', "
+                        f"user_id={user_id} (без LLM-классификатора)"
+                    )
+                    intent_params = {'intent': 'initial', 'mood': mood_key, 'movie_type': 'movie'}
+
+            if intent_params is None and len(message.split()) <= MOOD_PREFILTER_MAX_WORDS:
+                # Детерминированный mood-префильтр (add-mood-prefilter-b6, D1):
+                # короткое сообщение, ТОЧНО совпадающее со словарём настроений
+                # (или словоформа одиночного слова), идёт в подбор по настроению
+                # БЕЗ LLM-классификатора — в любом канале и без признака
+                # `_awaiting_mood`. Ветка стоит ПОСЛЕ маршрута B1 и проверяется
+                # только если тот не дал результата: сопоставление здесь строго
+                # уже (точное ⊂ подстрочное), поэтому при активном признаке
+                # исход не меняется. Неоднозначные ввода («устал от жизни»)
+                # префильтр не ловит — они уходят в LLM-пайплайн ниже.
+                mood_key = self._match_mood_prefilter(message)
+                if mood_key is not None:
+                    logger.info(
+                        f"Короткое сообщение распознано как настроение: mood='{mood_key}', "
+                        f"user_id={user_id} (префильтр, без LLM-классификатора)"
+                    )
+                    intent_params = {'intent': 'initial', 'mood': mood_key, 'movie_type': 'movie'}
+
+            if intent_params is None:
+                # Обычный пайплайн: маршруты B1 и префильтр B6 не сработали —
+                # признак не установлен, сообщение длинное либо не совпало
+                # точно с лексиконом настроений (D2)
+                intent_params = await self.intent_classifier.classify_with_llm(
+                    http_session,
+                    message,
+                    {'last_movies': session.last_movies, 'last_params': session.last_params}
+                )
             intent = intent_params.get("intent", "initial")
             logger.info(f"Обработка запроса: intent={intent}, user_id={user_id}")
 
             if intent == OFFTOPIC_INTENT:
                 log_blocked(user_id, "llm_offtopic", message)
+                # Персистентная метрика отказа LLM-классификатора (B7) —
+                # тот же fail-silent вызов в потоке, что и в ветке precheck
+                await asyncio.to_thread(
+                    record_refusal, user_id, "llm_offtopic", message,
+                    getattr(self.session_manager, '_app', None),
+                )
+                if awaiting_mood:
+                    # Одноразовость признака обязана доезжать до хранилища (D5):
+                    # этот ранний выход минует общий `save_session` ниже, а в
+                    # режиме БД `get_session` каждый раз собирает НОВЫЙ объект
+                    # сессии — pop без записи сбросил бы признак только в памяти.
+                    # Ветка исключения ниже признак СОЗНАТЕЛЬНО сохраняет: после
+                    # сбоя пользователь повторяет запрос, и приглашение о
+                    # настроении остаётся в силе (retry-friendly).
+                    await asyncio.to_thread(self.session_manager.save_session, session)
                 return {
                     "response": get_refusal_text("offtopic"),
                     "needs_clarification": False
@@ -914,30 +1250,14 @@ class DialogueManager:
         message_lower = message.lower()
         logger.info(f"Обработка общего запроса: '{message}', params: {params}")
         # === Распознавание настроения ===
+        # Словарь и сопоставление — общие с `process_message` через
+        # `self.mood_triggers` / `_detect_mood_key` (fix-mood-offtopic-b1, D3):
+        # дубль словаря удалён, поведение подбора прежнее.
         mood_genres = []
-        mood_triggers = {
-            'грустн': ['грустн', 'плохое настроение', 'поднять настроение', 'грущу', 'грусть', 'хочу радости',
-                       'подавлен', 'депресс', 'тоска', 'печал', 'уныл'],
-            'весел': ['весел', 'смех', 'смешн', 'посмеяться', 'радост', 'хорошее настроение', 'радость',
-                      'настроение отличное', 'счастлив', 'улыбк', 'забавн', 'юмор'],
-            'устал': ['устал', 'выгор', 'энергии нет', 'отдохнуть', 'расслабиться', 'спокойн', 'тихий вечер',
-                      'ничего напряжённого', 'без экшена', 'лёгкий фильм'],
-            'скучно': ['скучно', 'нечего смотреть', 'занять себя', 'развлечься', 'что-то интересное', 'надоело всё',
-                       'ищу что-то новое'],
-            'страшн': ['страшн', 'испуг', 'боюсь', 'ужас', 'мистик', 'триллер', 'пуга', 'жутк', 'напряг', 'напряжённый',
-                       'напрячь нервы', 'щекотка для нервов'],
-            'романт': ['романт', 'влюблен', 'любовь', 'пара', 'вдвоем', 'нежн', 'сердечко', 'романтический вечер',
-                       'чувств', 'влюблённость'],
-            'адреналин': ['адреналин', 'экшн', 'боевик', 'напряжение', 'динамик', 'крутой', 'взрывы', 'гонки', 'погони',
-                          'герои', 'спасение мира'],
-            'умный': ['умный', 'глубок', 'философ', 'мысл', 'интеллектуальн', 'осмысл', 'не для всех', 'сложный',
-                      'мозг', 'рефлексия', 'медитативн']
-        }
-        for mood_key, phrases in mood_triggers.items():
-            if any(phrase in message_lower for phrase in phrases):
-                mood_genres = self.mood_to_genre.get(mood_key, ['комедия'])
-                logger.info(f"Определены жанры по настроению '{mood_key}': {mood_genres}")
-                break
+        mood_key = self._detect_mood_key(message_lower)
+        if mood_key is not None:
+            mood_genres = self.mood_to_genre.get(mood_key, ['комедия'])
+            logger.info(f"Определены жанры по настроению '{mood_key}': {mood_genres}")
 
         explicit_genre = params.get('genre')
         if explicit_genre:
@@ -1038,6 +1358,12 @@ class DialogueManager:
                 "parameters": {**params, "movie_type": movie_type}
             }
 
+        # Флаг топ-выдачи (C6, add-top-media-group-album, design.md D1):
+        # доставка в telegram_bot решает по нему, отправлять ли альбом
+        # постеров (media group) ПОСЛЕ текстового списка. Устанавливается
+        # ТОЛЬКО в топ-ветке — mood/search-выдачи и веб (app.py) флаг
+        # игнорируют/не получают.
+        is_top = False
         if mood_genres:
             mood_text = self._get_mood_text(message_lower)
             response_text, reply_markup = self._generate_list_response(
@@ -1045,6 +1371,7 @@ class DialogueManager:
                 f"Вот {content_type}, которые помогут {mood_text}:"
             )
         elif any(word in message_lower for word in ['топ', 'лучш', 'рейтинг']):
+            is_top = True
             header = self._generate_top_header(
                 mood_genres[0] if mood_genres else None,
                 year,
@@ -1067,6 +1394,7 @@ class DialogueManager:
             "response": response_text,
             "reply_markup": reply_markup,
             "movies_list": movies,
+            "is_top": is_top,
             "parameters": {
                 **params,
                 "genre": mood_genres[0] if mood_genres else None,

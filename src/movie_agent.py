@@ -5,7 +5,11 @@ from typing import List, Dict, Optional, Tuple
 from kinopoisk_client import KinopoiskClient
 from recommendation_engine import RecommendationEngine
 from config import KINOPOISK_API_KEY, CACHE_TTL, CURRENT_YEAR
-from utils.movie_filter import extract_imdb_id
+from utils.movie_filter import (
+    extract_imdb_id,
+    extract_trailer_url,
+    extract_watch_providers,
+)
 from rt_enrichment import enrich_movies_with_rt_scores
 
 logger = logging.getLogger(__name__)
@@ -151,7 +155,16 @@ class MovieAgent:
                 # без неё у карточки info-интента не было бы кнопки «🔗 Кинопоиск».
                 'kinopoisk_url': f"https://www.kinopoisk.ru/film/{best_match.get('id')}/" if best_match.get('id') else None,
                 # IMDb ID из externalId (фаза 1, B3) — join-ключ для RT (B5)
-                'imdb_id': extract_imdb_id(best_match)
+                'imdb_id': extract_imdb_id(best_match),
+                # Трейлер и провайдеры (фаза 2, C3/C4). ВАЖНО: endpoint
+                # /movie/search игнорирует selectFields и не отдаёт
+                # videos/watchability (разведка 2026-09-24), поэтому здесь
+                # значения почти наверняка None/[] и карточка info-интента
+                # рендерится без кнопки трейлера и ряда провайдеров —
+                # приемлемая деградация (design.md D5 изменения
+                # add-trailer-and-provider-buttons).
+                'trailer_url': extract_trailer_url(best_match),
+                'watch_providers': extract_watch_providers(best_match)
             }
             # Обогащение карточки RT-оценками (фаза 1, B5): одно обращение к
             # источнику, данные для бейджа B7 в info-интенте. Fail-silent —

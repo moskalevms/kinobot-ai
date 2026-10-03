@@ -36,6 +36,9 @@ from dialogue_manager import (
     CARD_LINK_BUTTON_TEXT,
     CARD_SAVE_BUTTON_TEXT,
     CARD_SIMILAR_BUTTON_TEXT,
+    FEEDBACK_NOPE_BUTTON_TEXT,
+    FEEDBACK_RATE_BUTTON_TEXT,
+    FEEDBACK_WATCHED_BUTTON_TEXT,
     MOVIE_CARD_CAPTION_LIMIT,
     SAVE_CALLBACK_PREFIX,
     _cut_html_safely,
@@ -166,11 +169,18 @@ def test_card_keyboard_with_kinopoisk_url():
     _, keyboard = build_movie_card(_movie())
 
     buttons = _all_buttons(keyboard)
-    assert [b.text for b in buttons] == [CARD_LINK_BUTTON_TEXT, CARD_SIMILAR_BUTTON_TEXT, CARD_SAVE_BUTTON_TEXT, CARD_BACK_BUTTON_TEXT]
+    # B5: ряд фидбека — последние три кнопки карточки (⭐/✅/❌, маршрут fb:)
+    assert [b.text for b in buttons] == [
+        CARD_LINK_BUTTON_TEXT, CARD_SIMILAR_BUTTON_TEXT, CARD_SAVE_BUTTON_TEXT, CARD_BACK_BUTTON_TEXT,
+        FEEDBACK_RATE_BUTTON_TEXT, FEEDBACK_WATCHED_BUTTON_TEXT, FEEDBACK_NOPE_BUTTON_TEXT,
+    ]
     assert buttons[0].url == 'https://www.kinopoisk.ru/film/435/'
     assert buttons[1].callback_data == 'similar:435'
     assert buttons[2].callback_data == f'{SAVE_CALLBACK_PREFIX}435' == 'save:435'
     assert buttons[3].callback_data == CARD_BACK_CALLBACK == 'back:list'
+    assert buttons[4].callback_data == 'fb:rate:435'
+    assert buttons[5].callback_data == 'fb:watched:435'
+    assert buttons[6].callback_data == 'fb:nope:435'
 
 
 def test_card_keyboard_without_valid_url_has_no_link_button():
@@ -178,7 +188,8 @@ def test_card_keyboard_without_valid_url_has_no_link_button():
         _, keyboard = build_movie_card(_movie(kinopoisk_url=url))
 
         buttons = _all_buttons(keyboard)
-        assert [b.text for b in buttons] == [CARD_SIMILAR_BUTTON_TEXT, CARD_SAVE_BUTTON_TEXT, CARD_BACK_BUTTON_TEXT]
+        # B5: ряд фидбека присутствует и без url-кнопки (три основные + три фидбека)
+        assert [b.text for b in buttons] == [CARD_SIMILAR_BUTTON_TEXT, CARD_SAVE_BUTTON_TEXT, CARD_BACK_BUTTON_TEXT, FEEDBACK_RATE_BUTTON_TEXT, FEEDBACK_WATCHED_BUTTON_TEXT, FEEDBACK_NOPE_BUTTON_TEXT]
         assert buttons[0].callback_data == 'similar:435'
         assert buttons[1].callback_data == 'save:435'
 
@@ -199,8 +210,9 @@ def test_card_keyboard_without_id_is_safe():
     _, keyboard = build_movie_card({'title': 'Без id'})
 
     buttons = _all_buttons(keyboard)
-    assert buttons[-3].callback_data == 'similar:0'
-    assert buttons[-2].callback_data == 'save:0'
+    # B5: с рядом фидбека similar/save — шестая/пятая с конца кнопки
+    assert buttons[-6].callback_data == 'similar:0'
+    assert buttons[-5].callback_data == 'save:0'
     assert all(b.text for b in buttons)
 
 
@@ -557,8 +569,12 @@ def test_back_callback_without_user_is_friendly(monkeypatch):
 
 
 def test_unknown_prefix_replies_unknown_command():
-    """B7: неизвестный префикс — объяснение с кнопками возврата, не голый текст."""
-    update = FakeCallbackUpdate('menu:mood')
+    """B7: неизвестный префикс — объяснение с кнопками возврата, не голый текст.
+
+    Пример префикса с B8 нейтральный (`xyz:`): `menu:` стал известным
+    маршрутом главного меню (add-inline-menu-callbacks).
+    """
+    update = FakeCallbackUpdate('xyz:mood')
 
     asyncio.run(telegram_bot.handle_movie_detail(update, None))
 
@@ -632,9 +648,18 @@ def test_info_callback_api_error_does_not_crash(monkeypatch):
 
 
 def test_routes_table_is_extensible():
-    """Таблица маршрутов покрывает все префиксы A3/A4/B1/B3/B7/B4 (задел под B8)."""
+    """Таблица маршрутов покрывает все префиксы A3/A4/B1/B3/B7/B4/B5/B8."""
     prefixes = [prefix for prefix, _ in telegram_bot._CALLBACK_ROUTES]
 
-    assert prefixes == ['info:', 'alt:', 'similar:', 'back:', 'random:', 'mood:', 'retry:', 'page:', 'save:', 'unsave:', 'watchlist:', 'wpage:']
+    # B8: меню переведено на inline-callback — добавлены `menu:`/`top:`
+    assert prefixes == [
+        'info:', 'alt:', 'similar:', 'back:', 'random:', 'mood:', 'retry:',
+        'page:', 'save:', 'unsave:', 'watchlist:', 'wpage:', 'fb:',
+        'menu:', 'top:',
+    ]
+    # Коллизии startswith исключены: ни один префикс не начинает другой
+    for i, one in enumerate(prefixes):
+        for other in prefixes[i + 1:]:
+            assert not other.startswith(one), f'коллизия префиксов {one!r}/{other!r}'
     for _, handler in telegram_bot._CALLBACK_ROUTES:
         assert asyncio.iscoroutinefunction(handler)

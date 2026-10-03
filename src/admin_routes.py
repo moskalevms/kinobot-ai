@@ -3,13 +3,23 @@ import re
 from flask import Blueprint, render_template, redirect, url_for, request, flash
 from flask_login import login_user, logout_user, login_required, current_user
 from functools import wraps
-from datetime import datetime, timedelta, date
-from models.database import db, User, UserStatistics
+from datetime import datetime, timedelta, date, timezone
+from models.database import db, User, UserStatistics, OfftopicRefusal
 from bot_identity import get_current_bot
 
 admin_bp = Blueprint('admin', __name__)
 
 EMAIL_RE = re.compile(r'^[^@\s]+@[^@\s]+\.[^@\s]+$')
+
+# Человекочитаемые подписи причин отказа для страницы метрик (B7).
+# Ключи совпадают со значениями guardrails.precheck_message и причиной
+# llm_offtopic в dialogue_manager.process_message.
+REFUSAL_REASON_LABELS = {
+    'length': 'Слишком длинное сообщение',
+    'prompt_attack': 'Попытка инъекции промпта',
+    'offtopic': 'Офтопик (precheck)',
+    'llm_offtopic': 'Офтопик (LLM-классификатор)',
+}
 
 
 def admin_required(f):
@@ -113,6 +123,26 @@ def statistics():
     return render_template('admin/statistics.html',
                            chart_data=chart_data,
                            days=days)
+
+
+@admin_bp.route('/offtopic')
+@admin_required
+def offtopic():
+    """Метрики офтопик-отказов: топ-N заблокированных фрагментов за период (B7).
+
+    Данные нужны, чтобы находить ложные срабатывания guardrails по фактам
+    (повторяющиеся фрагменты), а не по ручным жалобам пользователей.
+    Фильтр периода — как в /statistics: ?days=7/30/90, по умолчанию 30.
+    """
+    days = request.args.get('days', 30, type=int)
+    # Cutoff в aware-UTC: created_at хранится как TIMESTAMPTZ (PostgreSQL)
+    # и сравнивается согласованно (design.md D5)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    rows = OfftopicRefusal.get_top_fragments(cutoff)
+    return render_template('admin/offtopic.html',
+                           rows=rows,
+                           days=days,
+                           reason_labels=REFUSAL_REASON_LABELS)
 
 
 @admin_bp.route('/users')

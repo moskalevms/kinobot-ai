@@ -2,7 +2,8 @@
 
 Изменение: add-telegram-commands-and-html-parsemode; дополнено правками
 add-onboarding-and-error-recovery (minor m1 — описание /start соответствует
-онбордингу, minor m2 — справка возвращает reply-меню как якорь навигации).
+онбордингу, minor m2 — справка возвращает меню как якорь навигации) и
+add-inline-menu-callbacks (B8 — меню стало inline-клавиатурой `menu:*`).
 Все проверки офлайн — используются фейковые application/bot/update без сети
 и реального Telegram.
 """
@@ -10,21 +11,22 @@ import asyncio
 import logging
 from typing import Any, List, Tuple
 
-from telegram import BotCommand, ReplyKeyboardMarkup
+from telegram import BotCommand, InlineKeyboardMarkup
 
 import telegram_bot
+from conftest import make_manager
 
 
 # --- A1: состав и ограничения команд -------------------------------------
 
 
 def test_build_bot_commands_names_and_limits():
-    """build_bot_commands возвращает 7 команд с ожидаемыми именами и описаниями."""
+    """build_bot_commands возвращает 8 команд с ожидаемыми именами и описаниями (C5: +stats)."""
     commands = telegram_bot.build_bot_commands()
 
     assert isinstance(commands, list)
     assert [c.command for c in commands] == [
-        "start", "help", "movie", "top", "genre", "mood", "list",
+        "start", "help", "movie", "top", "genre", "mood", "list", "stats",
     ]
     for cmd in commands:
         assert isinstance(cmd, BotCommand)
@@ -114,8 +116,12 @@ class _FakeUpdate:
         self.message = _FakeMessage()
 
 
-def test_handle_mood_command_sends_html():
+def test_handle_mood_command_sends_html(monkeypatch):
     """Команда /mood отправляет HTML-текст с <i>, без '*', parse_mode='HTML'."""
+    # Мок менеджера диалога (fix-mood-offtopic-b1, D8): после отправки
+    # приглашения хендлер пишет признак ожидания настроения в сессию —
+    # in-memory заглушка исключает обращение к реальной PostgreSQL
+    monkeypatch.setattr(telegram_bot, 'dialogue_manager', make_manager())
     update = _FakeUpdate()
 
     asyncio.run(telegram_bot.handle_mood_command(update, None))
@@ -129,16 +135,17 @@ def test_handle_mood_command_sends_html():
     assert text == telegram_bot._MOOD_PROMPT_HTML
 
 
-# --- B1 (minor m2): справка возвращает якорь reply-меню ---
+# --- B1 (minor m2) + B8: справка возвращает якорь меню (inline) ---
 
 
 def test_handle_help_attaches_main_menu_anchor():
-    """/help снова показывает reply-меню: постоянный якорь навигации до B8.
+    """/help показывает главное меню: постоянный якорь навигации (с B8 — inline).
 
-    /start после B1 меню не крепит (одно сообщение не несёт два
-    reply_markup), поэтому справка — точка, где пользователь гарантированно
-    видит меню и следующий шаг. Требование «ровно одно сообщение» у /start
-    при этом не нарушается.
+    /start после B1 меню не крепит (приветствие несёт inline-кнопки
+    мгновенной ценности), поэтому справка — точка, где пользователь
+    гарантированно видит меню и следующий шаг. С B8 reply-клавиатуры
+    удалены полностью (design.md D1): меню — inline-клавиатура с
+    префиксными callback `menu:*`.
     """
     update = _FakeUpdate()
 
@@ -148,7 +155,11 @@ def test_handle_help_attaches_main_menu_anchor():
     _, kwargs = update.message.texts[0]
     assert kwargs.get("parse_mode") == "HTML"
     markup = kwargs.get("reply_markup")
-    assert isinstance(markup, ReplyKeyboardMarkup)
-    menu_texts = {b.text for row in markup.keyboard for b in row}
+    assert isinstance(markup, InlineKeyboardMarkup)
+    buttons = [b for row in markup.inline_keyboard for b in row]
+    menu_texts = {b.text for b in buttons}
     assert "🎭 Фильм по настроению" in menu_texts
     assert "💡 Помощь" in menu_texts
+    for button in buttons:
+        assert button.callback_data.startswith("menu:")
+        assert len(button.callback_data.encode("utf-8")) <= 64

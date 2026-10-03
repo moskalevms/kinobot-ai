@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Метрики офтопик-отказов</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+</head>
+<body>
+    <nav class="navbar navbar-dark bg-dark">
+        <div class="container-fluid">
+            <a class="navbar-brand" href="{{ url_for('admin.dashboard') }}">🎬 KinoBot Admin</a>
+            <div class="d-flex">
+                <a href="{{ url_for('admin.profile') }}" class="btn btn-outline-light btn-sm me-2">Профиль</a>
+                <a href="{{ url_for('admin.admin_logout') }}" class="btn btn-outline-light btn-sm">Выход</a>
+            </div>
+        </div>
+    </nav>
+
+    <div class="container mt-4">
+        <h2><i class="fas fa-ban text-danger"></i> Метрики офтопик-отказов</h2>
+        <p class="text-muted">
+            Топ заблокированных фрагментов за период — повторяющиеся строки помогают
+            находить ложные срабатывания защиты (guardrails) по данным, а не по жалобам.
+        </p>
+
+        <div class="mb-3">
+            <a href="?days=7" class="btn btn-sm {{ 'btn-primary' if days == 7 else 'btn-outline-primary' }}">7 дней</a>
+            <a href="?days=30" class="btn btn-sm {{ 'btn-primary' if days == 30 else 'btn-outline-primary' }}">30 дней</a>
+            <a href="?days=90" class="btn btn-sm {{ 'btn-primary' if days == 90 else 'btn-outline-primary' }}">90 дней</a>
+        </div>
+
+        {% if rows %}
+        <div class="table-responsive">
+            <table class="table table-striped table-hover align-middle">
+                <thead class="table-dark">
+                    <tr>
+                        <th>Фрагмент сообщения</th>
+                        <th>Причина</th>
+                        <th class="text-center">Количество</th>
+                        <th>Последняя фиксация</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for fragment, reason, total, last_seen in rows %}
+                    <tr>
+                        <td><code>{{ fragment }}</code></td>
+                        <td>{{ reason_labels.get(reason, reason) }}</td>
+                        <td class="text-center"><span class="badge bg-danger">{{ total }}</span></td>
+                        <td>{{ last_seen.strftime('%d.%m.%Y %H:%M') if last_seen else '—' }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="alert alert-info" role="alert">
+            За выбранный период ({{ days }} дн.) отказов не зафиксировано.
+        </div>
+        {% endif %}
+
+        <p class="text-muted small mt-3">
+            <i class="fas fa-shield-alt"></i>
+            Приватность: в базе хранится только усечённый фрагмент сообщения
+            (не более 120 символов), полный текст запроса не сохраняется.
+        </p>
+    </div>
+</body>
+</html>

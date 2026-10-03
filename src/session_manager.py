@@ -19,7 +19,6 @@ class UserSession:
     user_id: str
     last_movies: List[Dict] = field(default_factory=list)
     last_params: Dict[str, Any] = field(default_factory=dict)
-    dialogue_history: List[Dict] = field(default_factory=list)
     created_at: float = field(default_factory=time.time)
     last_activity: float = field(default_factory=time.time)
 
@@ -31,7 +30,6 @@ class UserSession:
             'user_id': self.user_id,
             'last_movies': self.last_movies,
             'last_params': self.last_params,
-            'dialogue_history': self.dialogue_history,
             'created_at': self.created_at,
             'last_activity': self.last_activity
         }

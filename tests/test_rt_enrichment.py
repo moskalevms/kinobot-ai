@@ -131,7 +131,7 @@ class _FakeCache:
         self.set_calls: List[Any] = []
 
     async def aget_scores(self, imdb_id: Optional[str], app: Any = None) -> CacheLookup:
-        self.get_calls.append(imdb_id)
+        self.get_calls.append(imdb_id or '')
         exc = self.get_raises.get(imdb_id or '')
         if exc is not None:
             raise exc

@@ -18,7 +18,7 @@ from typing import Any
 from unittest.mock import AsyncMock
 
 import aiohttp
-from telegram import InlineKeyboardMarkup, ReplyKeyboardMarkup
+from telegram import InlineKeyboardMarkup
 from telegram.error import NetworkError, TimedOut
 
 import telegram_bot
@@ -26,6 +26,7 @@ from conftest import (
     FakeCallbackUpdate,
     FakeChat,
     FakeMessage,
+    FakeSentMessage,
     FakeUser,
     all_buttons,
     editable_message,
@@ -252,8 +253,12 @@ def test_error_handler_classifies_and_adds_buttons(caplog):
 
 
 def test_unknown_callback_explains_and_offers_return():
-    """Неизвестный префикс — объяснение + возврат к списку/случайный фильм."""
-    update = FakeCallbackUpdate('menu:mood', from_user=FakeUser(777))
+    """Неизвестный префикс — объяснение + возврат к списку/случайный фильм.
+
+    Пример префикса с B8 нейтральный (`xyz:`): `menu:` стал известным
+    маршрутом главного меню (add-inline-menu-callbacks).
+    """
+    update = FakeCallbackUpdate('xyz:mood', from_user=FakeUser(777))
 
     _run(telegram_bot.handle_movie_detail(update, None))
 
@@ -466,8 +471,11 @@ def test_retry_back_delegates_to_back_route(monkeypatch):
     assert 'Дюна' in message.edit_text.await_args.args[0]
 
 
-def test_retry_mood_delegates_to_mood_route():
+def test_retry_mood_delegates_to_mood_route(monkeypatch):
     """retry:mood (minor m4) — повтор приглашения «по настроению»."""
+    # Мок менеджера диалога (fix-mood-offtopic-b1, D8): повтор приглашения —
+    # та же точка, что пишет признак ожидания настроения в сессию
+    install_callback_mocks(monkeypatch, make_manager())
     update = FakeCallbackUpdate('retry:mood', from_user=FakeUser(777))
 
     _run(telegram_bot.handle_movie_detail(update, None))
@@ -489,11 +497,11 @@ class _FailOnceMessage(FakeMessage):
         super().__init__(chat=chat)
         self.failures = 0
 
-    async def reply_text(self, text: str, **kwargs: Any) -> None:
+    async def reply_text(self, text: str, **kwargs: Any) -> FakeSentMessage:
         if self.failures == 0:
             self.failures += 1
             raise NetworkError('Telegram недоступен')
-        await super().reply_text(text, **kwargs)
+        return await super().reply_text(text, **kwargs)
 
 
 def test_mood_callback_failure_retries_same_operation(caplog):
@@ -517,12 +525,13 @@ def test_mood_callback_failure_retries_same_operation(caplog):
 
 
 def test_unknown_user_service_reply_keeps_menu_as_action():
-    """Ветка `_callback_failure` без клавиатуры: reply-меню — это действие.
+    """Ветка `_callback_failure` без клавиатуры: главное меню — это действие.
 
     «Не удалось определить пользователя» — НЕ ошибка класса, а служебный
-    ответ: следующий шаг — ввод текстом, а два reply_markup в одном
-    сообщении Telegram не поддерживает (design.md D3). Фиксируем, что меню
-    прикреплено и текст отправлен в HTML.
+    ответ: следующий шаг — ввод текстом, а меню остаётся выходом
+    (design.md D3). С B8 меню — inline-клавиатура `menu:*` (design.md D7
+    add-inline-menu-callbacks): правило «≥1 действие» сохраняется.
+    Фиксируем, что меню прикреплено и текст отправлен в HTML.
     """
     update = FakeCallbackUpdate('retry:top', from_user=None)
 
@@ -531,7 +540,8 @@ def test_unknown_user_service_reply_keeps_menu_as_action():
     text, kwargs = update.callback_query.message.texts[0]
     assert 'Не удалось определить пользователя' in text
     assert kwargs.get('parse_mode') == 'HTML'
-    assert isinstance(kwargs.get('reply_markup'), ReplyKeyboardMarkup)
+    assert isinstance(kwargs.get('reply_markup'), InlineKeyboardMarkup)
+    assert all_buttons(kwargs['reply_markup'])  # минимум одно действие
 
 
 # --- 7. Длина пользовательского текста в логах (nit n8) ---

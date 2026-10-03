@@ -103,12 +103,31 @@ class FakeChat:
         self.actions.append(kwargs)
 
 
+class FakeSentMessage:
+    """Сообщение, ОТПРАВЛЕННОЕ ботом (результат reply_*): поддерживает delete().
+
+    Паттерн B2 (fix-start-onboarding-b2b3): служебное сообщение /start с
+    `ReplyKeyboardRemove` отправляется и СРАЗУ удаляется — тесты проверяют
+    как факт отправки, так и удаление (флаг `deleted`).
+    """
+
+    def __init__(self, text: str, kwargs: Any):
+        self.text = text
+        self.kwargs = kwargs
+        self.deleted = False
+
+    async def delete(self) -> None:
+        self.deleted = True
+
+
 class FakeMessage:
     """Сообщение БЕЗ edit-методов: записывает ответы, умеет имитировать отказ.
 
     Gate `_edit_or_send` (A5) направляет доставку такого объекта прежним
     путём (`_send_result`); `fail_photo=True` имитирует отказ Telegram на
-    URL постера (fallback карточки на текст, A4).
+    URL постера (fallback карточки на текст, A4). `reply_text` возвращает
+    `FakeSentMessage` (B2: send+delete служебного сообщения), отправленные
+    сообщения дублируются в список `sent`.
     """
 
     def __init__(self, chat: Optional[FakeChat] = None, fail_photo: bool = False):
@@ -116,9 +135,13 @@ class FakeMessage:
         self.fail_photo = fail_photo
         self.texts: List[Tuple[str, Any]] = []
         self.photos: List[Tuple[Any, Any]] = []
+        self.sent: List[FakeSentMessage] = []
 
-    async def reply_text(self, text: str, **kwargs: Any) -> None:
+    async def reply_text(self, text: str, **kwargs: Any) -> FakeSentMessage:
         self.texts.append((text, kwargs))
+        sent = FakeSentMessage(text, kwargs)
+        self.sent.append(sent)
+        return sent
 
     async def reply_photo(self, photo: Any, **kwargs: Any) -> None:
         if self.fail_photo:

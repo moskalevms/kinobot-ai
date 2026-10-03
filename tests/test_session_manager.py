@@ -4,7 +4,17 @@ from unittest.mock import MagicMock
 from flask import Flask
 
 import models.database as db_module
-from session_manager import SessionManager
+from session_manager import SessionManager, UserSession
+
+
+def test_user_session_to_dict_key_set():
+    """to_dict() возвращает ровно ожидаемый набор ключей, без мёртвого поля
+    истории диалога (guard задачи C8: поле удалено как незаполняемое —
+    точное сравнение множества ключей не даст вернуть его молча)."""
+    keys = set(UserSession(user_id='x').to_dict())
+    assert keys == {
+        'user_id', 'last_movies', 'last_params', 'created_at', 'last_activity'
+    }
 
 
 def test_get_session_does_not_write(monkeypatch):

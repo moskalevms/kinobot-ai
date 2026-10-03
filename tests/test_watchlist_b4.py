@@ -15,8 +15,8 @@
 - callback-маршруты бота: save (успех/дубль/сбой хранилища/нет фильма в
   сессии/некорректный id), unsave (удаление + перерендер), watchlist:view,
   wpage (включая устаревший offset), retry:save;
-- точки входа: команда /list, пункт reply-меню «📌 Мой список», состав
-  главного меню и BotCommand.
+- точки входа: команда /list, пункт меню «📌 Мой список» (с B8 —
+  inline-callback `menu:watchlist`), состав главного меню и BotCommand.
 
 Все проверки офлайн: фейки PTB/aiohttp из tests/conftest.py, БД — моки или
 in-memory SQLite, сеть и реальный Telegram не используются.
@@ -659,13 +659,7 @@ def test_watchlist_callback_without_user_is_friendly(monkeypatch):
     assert 'Не удалось определить пользователя' in message.reply_text.await_args.args[0]
 
 
-# === 6. Точки входа: команда /list и reply-меню ===
-
-
-class _TextMessage(FakeMessage):
-    def __init__(self, text: str):
-        super().__init__()
-        self.text = text
+# === 6. Точки входа: команда /list и пункт меню `menu:watchlist` (B8) ===
 
 
 def test_list_command_renders_first_page_as_new_message(monkeypatch):
@@ -686,25 +680,34 @@ def test_list_command_renders_first_page_as_new_message(monkeypatch):
     assert kwargs['reply_markup'] is not None
 
 
-def test_main_menu_text_shows_watchlist(monkeypatch):
-    """Пункт reply-меню «📌 Мой список» диспетчеризуется по точному тексту."""
+def test_menu_watchlist_callback_shows_watchlist(monkeypatch):
+    """Пункт меню «📌 Мой список» (B8): callback `menu:watchlist` — тот же код /list.
+
+    Диспетчеризация по точному тексту reply-кнопки удалена: действие меню
+    выполняется через префиксный callback общим хендлером
+    `handle_watchlist_command` (адаптер `_as_message_update`).
+    """
     fake = FakeWatchlistManager()
     fake.items = _items(1)
     fake.total = 1
     _install_watchlist(monkeypatch, fake)
-    message = _TextMessage('📌 Мой список')
-    update = SimpleNamespace(message=message, effective_user=FakeUser(777))
+    update = FakeCallbackUpdate('menu:watchlist', message=FakeMessage(), from_user=FakeUser(777))
 
-    _run(telegram_bot.handle_message(update, None))
+    _run(telegram_bot.handle_movie_detail(update, None))
 
-    assert len(message.texts) == 1
-    assert '1. <b>Фильм 1</b>' in message.texts[0][0]
+    assert fake.list_calls == [('777', 0, WATCHLIST_PAGE_LIMIT)]
+    texts = update.callback_query.message.texts
+    assert len(texts) == 1
+    assert '1. <b>Фильм 1</b>' in texts[0][0]
 
 
 def test_main_menu_contains_watchlist_button():
+    """Главное меню (с B8 — inline) содержит кнопку «📌 Мой список»."""
     menu = telegram_bot.get_main_menu()
-    texts = {b.text for row in menu.keyboard for b in row}
-    assert '📌 Мой список' in texts
+    buttons = [b for row in menu.inline_keyboard for b in row]
+    watchlist_buttons = [b for b in buttons if b.text == '📌 Мой список']
+    assert watchlist_buttons, 'кнопка watchlist отсутствует в главном меню'
+    assert watchlist_buttons[0].callback_data == 'menu:watchlist'
 
 
 def test_bot_commands_include_list():

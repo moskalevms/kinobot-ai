@@ -84,7 +84,14 @@ class KinopoiskClient:
                 # (imdb/tmdb/trakt); imdb — join-ключ для оценок Rotten
                 # Tomatoes через OMDb. Покрытие externalId.imdb ~69% базы:
                 # у фильмов без него RT-бейджа просто не будет.
-                'externalId'
+                'externalId',
+                # videos/watchability (фаза 2, C3/C4): трейлеры и доступность
+                # онлайн-просмотра. Разведка api.kinopoisk.dev v1.4
+                # (2026-09-24): watchability РАБОТАЕТ (items: name/url/лого,
+                # покрытие частичное), videos — имя валидно, но данные API
+                # сегодня не заполняет (forward-compatible задел под кнопку
+                # «▶️ Трейлер», см. extract_trailer_url).
+                'videos', 'watchability'
             ],
             'sortField': sort_by,
             'sortType': -1,
@@ -147,7 +154,10 @@ class KinopoiskClient:
             'selectFields': [
                 'id', 'name', 'year', 'genres', 'rating', 'votes',
                 'description', 'poster', 'countries',
-                'externalId'  # join-ключ IMDb ID (фаза 1, B3)
+                'externalId',  # join-ключ IMDb ID (фаза 1, B3)
+                # C3/C4 (разведка 2026-09-24): watchability у /v1.4/movie
+                # отдаётся, videos пустое — см. комментарий в search_movies.
+                'videos', 'watchability'
             ],
             'sortField': 'rating.imdb',
             'sortType': -1,
@@ -192,7 +202,14 @@ class KinopoiskClient:
             'selectFields': [
                 'id', 'name', 'alternativeName', 'year', 'genres', 'rating',
                 'votes', 'description', 'poster', 'countries', 'type',
-                'externalId'  # join-ключ IMDb ID (фаза 1, B3)
+                'externalId',  # join-ключ IMDb ID (фаза 1, B3)
+                # C3/C4: ВАЖНО — endpoint /movie/search игнорирует
+                # selectFields (разведка 2026-09-24) и отдаёт фиксированный
+                # набор полей БЕЗ videos/watchability. Поля перечислены для
+                # консистентности запросов; карточка info-интента рендерится
+                # без трейлера и провайдеров — приемлемая деградация
+                # (design.md D5 изменения add-trailer-and-provider-buttons).
+                'videos', 'watchability'
             ]
         }
         logger.info(f"[KinopoiskClient] Поиск по названию: {title}")

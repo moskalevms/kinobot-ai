@@ -6,6 +6,8 @@ from utils.movie_filter import (
     MUSIC_ONLY_GENRES,
     extract_critics_fields,
     extract_imdb_id,
+    extract_trailer_url,
+    extract_watch_providers,
     filter_movies_by_quality,
     get_country_priority,
     get_critics_tier,
@@ -423,6 +425,14 @@ class RecommendationEngine:
                 # IMDb ID из externalId (фаза 1, B3): join-ключ для
                 # обогащения RT-скорами (B5); None у ~31% фильмов.
                 'imdb_id': extract_imdb_id(movie),
+                # Трейлер и стриминг-провайдеры (фаза 2, C3/C4): данные
+                # того же ответа (selectFields videos/watchability),
+                # новых запросов нет. trailer_url сегодня всегда None —
+                # API v1.4 не заполняет videos (разведка 2026-09-24,
+                # forward-compatible задел); watch_providers — список
+                # {name, url} ≤3 либо пусто при отсутствии данных.
+                'trailer_url': extract_trailer_url(movie),
+                'watch_providers': extract_watch_providers(movie),
                 # Внутренние поля для пересортировки финала с учётом RT
                 # (фаза 1, B6): оценка s1 после критиков (A1), величина
                 # ступени fc для суммарного клампа ступеней и группа

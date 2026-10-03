@@ -77,6 +77,17 @@ RT_TIER_LOW = 40           # порог «провала» по мнению к�
 RT_TIER_BONUS = 0.3        # величина ступени Tomatometer
 RT_PERCENT_SCALE = 10.0    # делитель нормализации: 0–100 → шкала 0–10
 
+# --- Параметры «Где смотреть» (фаза 2, Epic C, C4) ---
+# Лимит стриминг-провайдеров в карточке фильма: 3 кнопки — один ровный
+# ряд (как ряд фидбека B5), порядок провайдеров в ответе kinopoisk.dev
+# уже отражает популярность. Извлечение — extract_watch_providers.
+WATCH_PROVIDERS_LIMIT = 3
+# Лимит длины url inline-кнопки по Bot API (1–256 символов): аномально
+# длинная ссылка (раздутые UTM-параметры) даст BadRequest(ButtonUrlInvalid)
+# и пользователь потеряет ВСЮ карточку, поэтому такие элементы отсеиваются
+# на этапе извлечения — незаметная деградация вместо отказа отправки.
+PROVIDER_URL_MAX_LENGTH = 256
+
 
 def get_country_priority(movie: Dict) -> int:
     """Приоритет фильма по странам производства.
@@ -230,6 +241,111 @@ def extract_imdb_id(movie: Dict) -> Optional[str]:
         return None
     imdb = imdb.strip()
     return imdb or None
+
+
+def extract_trailer_url(movie: Dict) -> Optional[str]:
+    """URL трейлера из ответа kinopoisk.dev (фаза 2, Epic C, C3).
+
+    FORWARD-COMPATIBLE механизм: живая разведка api.kinopoisk.dev v1.4
+    (2026-09-24) показала, что имя `videos` проходит валидацию
+    selectFields, но данные API сегодня НЕ заполняет (0 документов с
+    videos в top250 × 30; `notNullFields=videos` → 400; вложенные имена
+    `videos.trailers`/`trailer`/`trailerUrl` невалидны → 400). Поэтому
+    в проде функция сейчас всегда возвращает None и кнопка «▶️ Трейлер»
+    не появляется — это НЕ баг, а незаметная деградация из критерия
+    приёмки C3; если API начнёт отдавать videos, фича заработает без
+    правки кода (см. design.md D1 изменения
+    add-trailer-and-provider-buttons).
+
+    Ожидаемая структура (схема другого API из бэклога, парсим защитно):
+    videos: {trailers: [{url, name, site}, …]}. Возвращается первая
+    валидная ссылка (непустая строка с префиксом http/https); если у
+    элементов есть поле `site`, приоритет отдаётся YouTube
+    (регистронезависимо) — он открывается в Telegram встроенным
+    плеером. Любая патология (нет videos/не словарь, нет trailers/не
+    список/пуст, элементы не-словари, ссылки невалидны) — None без
+    исключений, по образцу extract_imdb_id.
+    """
+    videos = movie.get('videos')
+    if not isinstance(videos, dict):
+        return None
+    trailers = videos.get('trailers')
+    if not isinstance(trailers, list) or not trailers:
+        return None
+
+    def _valid_url(item: object) -> Optional[str]:
+        """Валидная http(s)-ссылка элемента-словаря либо None."""
+        if not isinstance(item, dict):
+            return None
+        url = item.get('url')
+        if not isinstance(url, str):
+            return None
+        url = url.strip()
+        return url if url.startswith(('http://', 'https://')) else None
+
+    fallback: Optional[str] = None
+    for trailer in trailers:
+        url = _valid_url(trailer)
+        if url is None:
+            continue
+        site = trailer.get('site')
+        if isinstance(site, str) and site.strip().lower() == 'youtube':
+            return url
+        if fallback is None:
+            fallback = url
+    return fallback
+
+
+def extract_watch_providers(movie: Dict) -> List[Dict[str, str]]:
+    """Стриминг-провайдеры из ответа kinopoisk.dev (фаза 2, Epic C, C4).
+
+    Живая разведка api.kinopoisk.dev v1.4 (2026-09-24): watchability
+    РАБОТАЕТ — {items: [{name: «Okko», url: «https://okko.tv/…»,
+    logo: {url: …}}, …]}; покрытие частичное (у части фильмов
+    {items: []} — штатная ситуация). Основной endpoint /v1.4/movie
+    отдаёт поле при selectFields=watchability; /movie/search его
+    игнорирует (design.md D5 изменения
+    add-trailer-and-provider-buttons). Логотипы не используются:
+    url-кнопка PTB 22.5 иконок не поддерживает (это задача C1).
+
+    Возвращает список {'name': str, 'url': str} длиной не более
+    WATCH_PROVIDERS_LIMIT: только элементы-словари с непустым name
+    (строка, strip) и url, начинающимся с `http` и не длиннее
+    PROVIDER_URL_MAX_LENGTH (256) символов — лимит Bot API для url
+    inline-кнопки: более длинная ссылка отклонила бы всю карточку
+    (BadRequest(ButtonUrlInvalid)); дубликаты по name исключаются с
+    сохранением порядка первого вхождения. Любая патология (нет
+    watchability/не словарь, items не список/пуст, элементы невалидны)
+    — пустой список без исключений.
+    """
+    watchability = movie.get('watchability')
+    if not isinstance(watchability, dict):
+        return []
+    items = watchability.get('items')
+    if not isinstance(items, list):
+        return []
+
+    providers: List[Dict[str, str]] = []
+    seen: Set[str] = set()
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        name = item.get('name')
+        url = item.get('url')
+        if not isinstance(name, str) or not isinstance(url, str):
+            continue
+        name = name.strip()
+        url = url.strip()
+        # Отсечка по длине — лимит url inline-кнопки Bot API (256 символов)
+        if not name or not url.startswith('http') or len(url) > PROVIDER_URL_MAX_LENGTH:
+            continue
+        if name in seen:
+            continue
+        seen.add(name)
+        providers.append({'name': name, 'url': url})
+        if len(providers) >= WATCH_PROVIDERS_LIMIT:
+            break
+    return providers
 
 
 def get_critics_tier(movie: Dict) -> float:

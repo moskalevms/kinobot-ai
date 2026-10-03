@@ -2,10 +2,13 @@
 # Единая точка инициализации базы данных: модели берутся из
 # src/models/database.py, дублирующих определений нет.
 # Все таблицы — включая rt_scores (кэш оценок Rotten Tomatoes, модель
-# RtScore) и watchlist («📌 Мой список» пользователя, Epic B/B4, модель
-# Watchlist) — создаются вызовом db.create_all() ниже; их схемы определены
-# только в src/models/database.py и здесь НЕ дублируются (openspec change
-# add-watchlist).
+# RtScore), watchlist («📌 Мой список» пользователя, Epic B/B4, модель
+# Watchlist), movie_feedback (реакции и оценки пользователя по фильмам,
+# Epic B/B5, модель MovieFeedback) и offtopic_refusals (метрики
+# офтопик-отказов guardrails, Epic B/B7, модель OfftopicRefusal) —
+# создаются вызовом db.create_all() ниже; их схемы определены только в
+# src/models/database.py и здесь НЕ дублируются (openspec changes
+# add-watchlist, add-movie-feedback, add-offtopic-metrics-b7).
 import os
 import sys
 

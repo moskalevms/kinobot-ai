@@ -107,9 +107,12 @@ def test_legacy_movie_card_delivered_as_text_without_link_button():
     assert '<a href' not in text and '🍅' not in text
     assert_html_balanced(text)
     # Клавиатура вырождается: без ссылки остаются «🎬 Похожие»,
-    # «📌 Сохранить» (B4) и «⬅️ К списку»
+    # «📌 Сохранить» (B4), «⬅️ К списку» и ряд фидбека (B5)
     buttons = all_buttons(markup)
-    assert [b.callback_data for b in buttons] == ['similar:7', f'{SAVE_CALLBACK_PREFIX}7', CARD_BACK_CALLBACK]
+    assert [b.callback_data for b in buttons] == [
+        'similar:7', f'{SAVE_CALLBACK_PREFIX}7', CARD_BACK_CALLBACK,
+        'fb:rate:7', 'fb:watched:7', 'fb:nope:7',
+    ]
     assert all(b.url is None for b in buttons)
 
     message = FakeMessage(chat=FakeChat())

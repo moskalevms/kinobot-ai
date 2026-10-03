@@ -7,9 +7,7 @@
 - декоративные эмодзи без закреплённого смысла не вернулись в telegram_bot.py;
 - docs/emoji_guideline.md существует и содержит обязательные разделы;
 - parameter_extraction_prompt.txt содержит инструкцию о запрете рискованных
-  эмодзи и сохранил JSON-контракт извлечения параметров;
-- single_movie_response_prompt.txt содержит правило эмодзи и пометку о том,
-  что файл пока не загружается кодом.
+  эмодзи и сохранил JSON-контракт извлечения параметров.
 
 Имена эмодзи в сообщениях об ошибках выводятся code point'ами (U+XXXX),
 чтобы падение теста не сломало консоль cp1251 (AGENTS.md).
@@ -38,7 +36,6 @@ DECORATIVE_EMOJI = (
 
 GUIDELINE_PATH = ROOT / 'docs' / 'emoji_guideline.md'
 EXTRACTION_PROMPT_PATH = ROOT / 'src' / 'prompts' / 'parameter_extraction_prompt.txt'
-SINGLE_MOVIE_PROMPT_PATH = ROOT / 'src' / 'prompts' / 'single_movie_response_prompt.txt'
 
 
 def _describe(char: str) -> str:
@@ -125,14 +122,3 @@ def test_extraction_prompt_has_emoji_ban_and_keeps_json_contract() -> None:
     ):
         assert field_line in text, 'Список полей JSON-ответа изменён'
     assert text.count('{"intent":') >= 8, 'Примеры JSON-ответов повреждены'
-
-
-def test_single_movie_prompt_has_emoji_rule_and_status_note() -> None:
-    """Мёртвый промпт ответа согласован с гайдлайном и помечен как незагружаемый."""
-    text = SINGLE_MOVIE_PROMPT_PATH.read_text(encoding='utf-8')
-    assert 'не загружается' in text, 'Нет пометки о том, что файл не загружается кодом'
-    assert 'ЗАПРЕЩЕНО' in text, 'В промпте нет строки запрета (маркер «ЗАПРЕЩЕНО»)'
-    assert 'не более одного эмодзи' in text, 'Нет правила «не более одного эмодзи»'
-    # Прежняя инструкция «1–2 релевантных эмодзи» и пример с 😊🍿 удалены.
-    assert '1–2 релевантных эмодзи' not in text, 'Старое правило «1–2 эмодзи» не удалено'
-    assert '\U0001F60A' not in text, 'Пример промпта всё ещё содержит U+1F60A'

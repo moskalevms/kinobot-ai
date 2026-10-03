@@ -1,10 +1,13 @@
 """Тесты B1: онбординг «ценность сразу» (add-onboarding-and-error-recovery).
 
-Без сети и реального Telegram: /start — одно короткое сообщение с
-inline-кнопками мгновенных действий; маршрут `random:movie` доставляет
+Без сети и реального Telegram: /start — короткое приветствие с
+inline-кнопками мгновенных действий (с B2 снятие старой reply-клавиатуры
+доставляется невидимым служебным сообщением: заглушка + ReplyKeyboardRemove
+и немедленное удаление); маршрут `random:movie` доставляет
 карточку случайного фильма (edit-путь A5 и fallback новым сообщением);
 пустой результат/сбой — дружелюбная ошибка класса «сеть/Kinopoisk» с
-кнопкой повтора (B7); `mood:start` — единый текст приглашения.
+кнопкой повтора (B7); `mood:start` — единый текст приглашения;
+«📌 Мой список» (B3) — тап с экрана /start маршрутизируется в список.
 Мок-паттерны — общие фейки из `tests/conftest.py`.
 """
 import asyncio
@@ -28,7 +31,7 @@ from conftest import (
     make_movie,
 )
 from dialogue_manager import RANDOM_CANDIDATE_LIMIT, RANDOM_MIN_RATING
-from telegram import InlineKeyboardMarkup, ReplyKeyboardMarkup
+from telegram import InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyKeyboardRemove
 
 
 def _run(coro):
@@ -42,26 +45,39 @@ class _StartUpdate:
         self.message = FakeMessage(chat=FakeChat())
 
 
-# --- 1. /start: одно короткое сообщение + inline-кнопки ---
+# --- 1. /start: одно видимое сообщение + inline-кнопки ---
 
 
-def test_start_sends_single_short_html_message():
-    """/start — РОВНО одно сообщение ≤4 строк, parse_mode='HTML', без Markdown."""
+def test_start_shows_single_visible_message():
+    """/start: приветствие ПЕРВОЕ (≤4 строк, HTML); служебное сообщение удалено.
+
+    B2 (пересмотр B8 design.md D4): снятие залипшей reply-клавиатуры
+    доставляется служебным сообщением с минимальной заглушкой и
+    `ReplyKeyboardRemove`, которое СРАЗУ удаляется — пользователь видит
+    РОВНО одно сообщение (приветствие), проверки B1 сохранены.
+    """
     update = _StartUpdate()
 
     _run(telegram_bot.start(update, None))
 
-    assert len(update.message.texts) == 1
+    # Два ОТПРАВЛЕННЫХ сообщения: приветствие + служебное (B2)
+    assert len(update.message.texts) == 2
     text, kwargs = update.message.texts[0]
     assert text == telegram_bot._WELCOME_HTML
     assert len(text.splitlines()) <= 4
     assert kwargs.get('parse_mode') == 'HTML'
     assert '*' not in text  # никакого Markdown
     assert_html_balanced(text)
+    stub_text, stub_kwargs = update.message.texts[1]
+    assert isinstance(stub_kwargs.get('reply_markup'), ReplyKeyboardRemove)
+    assert stub_text == telegram_bot._KEYBOARD_REMOVAL_STUB_TEXT
+    # Видимость: служебное сообщение удалено, приветствие осталось
+    assert update.message.sent[0].deleted is False
+    assert update.message.sent[1].deleted is True
 
 
-def test_start_keyboard_has_both_instant_action_buttons():
-    """Inline-кнопки: «🎲 Случайный фильм вечера» и «🎭 Подобрать по настроению»."""
+def test_start_keyboard_has_instant_actions_and_watchlist():
+    """Inline-кнопки (B1+B3): мгновенная ценность (ряд 1) и «📌 Мой список» (ряд 2)."""
     update = _StartUpdate()
 
     _run(telegram_bot.start(update, None))
@@ -73,7 +89,11 @@ def test_start_keyboard_has_both_instant_action_buttons():
     assert [(b.text, b.callback_data) for b in buttons] == [
         (telegram_bot.RANDOM_MOVIE_BUTTON_TEXT, telegram_bot.RANDOM_MOVIE_CALLBACK),
         (telegram_bot.MOOD_BUTTON_TEXT, telegram_bot.MOOD_START_CALLBACK),
+        (telegram_bot.WATCHLIST_MENU_BUTTON_TEXT, f'{telegram_bot._MENU_PREFIX}watchlist'),
     ]
+    # B3: вторая строка — одна кнопка быстрого доступа к списку
+    assert len(markup.inline_keyboard) == 2
+    assert len(markup.inline_keyboard[1]) == 1
     for button in buttons:
         # Лимиты Bot API: подпись ≤64 символа, callback_data ≤64 байта
         assert len(button.text) <= 64
@@ -88,6 +108,45 @@ def test_start_does_not_attach_reply_menu():
 
     _, kwargs = update.message.texts[0]
     assert not isinstance(kwargs.get('reply_markup'), ReplyKeyboardMarkup)
+
+
+def test_start_watchlist_button_routes_to_list(monkeypatch):
+    """B3: тап «📌 Мой список» с экрана /start открывает список (menu:watchlist).
+
+    Сквозная связка «кнопка → маршрут»: callback_data берётся ПРЯМО из
+    онбординг-клавиатуры и прогоняется через диспетчер `handle_movie_detail`
+    (префикс `menu:` → ветка watchlist → `handle_watchlist_command`, тот же
+    код, что /list; пустой список — дружелюбная заглушка существующего
+    поведения). Фейк watchlist-менеджера — паттерн test_menu_callbacks_b8.
+    """
+    markup = telegram_bot.build_onboarding_keyboard()
+    watchlist_datas = [
+        b.callback_data for b in all_buttons(markup)
+        if b.text == telegram_bot.WATCHLIST_MENU_BUTTON_TEXT
+    ]
+    assert watchlist_datas == [f'{telegram_bot._MENU_PREFIX}watchlist']
+
+    class _FakeWatchlist:
+        """Минимальная заглушка WatchlistManager: одна страница списка."""
+
+        def __init__(self):
+            self.list_calls: List[Tuple[Any, ...]] = []
+
+        def list_page(self, user_id, offset, limit):
+            self.list_calls.append((user_id, offset, limit))
+            items = [{'kinopoisk_id': 1, 'title': 'Фильм 1', 'year': 2001,
+                      'poster_url': None, 'added_at': None}]
+            return items, 1
+
+    fake = _FakeWatchlist()
+    monkeypatch.setattr(telegram_bot, 'get_watchlist_manager', lambda: fake)
+
+    update = FakeCallbackUpdate(watchlist_datas[0], from_user=FakeUser(777))
+    _run(telegram_bot.handle_movie_detail(update, None))
+
+    assert fake.list_calls and fake.list_calls[0][0] == '777'
+    assert 'Фильм 1' in update.callback_query.message.texts[0][0]
+    assert update.callback_query.answer_calls == 1
 
 
 def test_welcome_follows_emoji_guideline():
@@ -106,15 +165,31 @@ def test_welcome_follows_emoji_guideline():
         assert emoji_count <= 1
 
 
-def test_main_menu_and_text_dispatch_preserved_until_b8():
-    """Reply-меню и диспетчеризация по тексту кнопок сохранены (до B8)."""
+def test_main_menu_is_inline_and_text_dispatch_removed(monkeypatch):
+    """B8: меню — inline-кнопки `menu:*`, диспетчеризация по тексту удалена.
+
+    Прежняя проверка «reply-меню и диспетчеризация сохранены до B8»
+    перевёрнута: меню стало inline-клавиатурой, а ручной ввод прежней
+    подписи кнопки («⬅️ Назад») уходит в LLM-пайплайн как обычный запрос —
+    сравнений текста сообщения с подписями кнопок в `handle_message` нет.
+    """
     menu = telegram_bot.get_main_menu()
-    assert isinstance(menu, ReplyKeyboardMarkup)
-    menu_texts = {b.text for row in menu.keyboard for b in row}
+    assert isinstance(menu, InlineKeyboardMarkup)
+    buttons = all_buttons(menu)
+    menu_texts = {b.text for b in buttons}
     assert '🎭 Фильм по настроению' in menu_texts
     assert '🆕 Новый диалог' in menu_texts
+    for button in buttons:
+        assert button.callback_data.startswith('menu:')
 
-    # Текстовая диспетчеризация работает: «⬅️ Назад» возвращает главное меню
+    # Ручной ввод бывшей подписи reply-кнопки — обычный запрос в LLM-пайплайн
+    calls: List[Tuple[Any, Any]] = []
+
+    async def _fake_process(update, context, user_id, query):
+        calls.append((user_id, query))
+
+    monkeypatch.setattr(telegram_bot, '_process_and_reply', _fake_process)
+
     class _TextMessage(FakeMessage):
         def __init__(self, text: str):
             super().__init__()
@@ -122,9 +197,9 @@ def test_main_menu_and_text_dispatch_preserved_until_b8():
 
     update = SimpleNamespace(message=_TextMessage('⬅️ Назад'), effective_user=FakeUser(777))
     _run(telegram_bot.handle_message(update, None))
-    text, kwargs = update.message.texts[0]
-    assert 'Вернулись в главное меню' in text
-    assert isinstance(kwargs.get('reply_markup'), ReplyKeyboardMarkup)
+    assert calls == [('777', '⬅️ Назад')]
+    # Меню-ответа на текст больше нет: handle_message ничего не отправил сам
+    assert update.message.texts == []
 
 
 # --- 2. Маршрут random:movie ---
@@ -239,8 +314,12 @@ def test_random_callback_without_user_is_friendly(monkeypatch):
 # --- 3. Маршрут mood:start ---
 
 
-def test_mood_callback_sends_shared_prompt_as_new_message():
+def test_mood_callback_sends_shared_prompt_as_new_message(monkeypatch):
     """«🎭 Подобрать по настроению» — единый текст `_MOOD_PROMPT_HTML` новым сообщением."""
+    # Мок менеджера диалога (fix-mood-offtopic-b1, D8): маршрут после доставки
+    # приглашения пишет в сессию признак ожидания ответа о настроении —
+    # с in-memory заглушкой тест не обращается к реальной PostgreSQL
+    install_callback_mocks(monkeypatch, make_manager())
     update = FakeCallbackUpdate(telegram_bot.MOOD_START_CALLBACK, from_user=FakeUser(777))
 
     _run(telegram_bot.handle_movie_detail(update, None))
