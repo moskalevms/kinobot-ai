@@ -39,8 +39,12 @@ from dialogue_manager import (
 
 
 def _nav_row(keyboard) -> list:
-    """Последний ряд клавиатуры списка — ряд навигации (B2)."""
-    return keyboard.inline_keyboard[-1]
+    """Предпоследний ряд клавиатуры списка — ряд навигации (B2).
+
+    Последний ряд списка — выход в хаб «🏠 Меню» (`menu:main`, C1), поэтому
+    nav-ряд берётся по индексу [-2].
+    """
+    return keyboard.inline_keyboard[-2]
 
 
 def _assert_full_nav_row(nav_row: list, movies: list, offset: int = LIST_DISPLAY_LIMIT) -> None:
@@ -68,8 +72,9 @@ def test_nav_row_under_regular_search_result():
     result = _run(dm.process_message(None, 'u1', 'посоветуй комедию'))
 
     keyboard = result['reply_markup']
-    # Два ряда номеров (4 + 1) + ряд навигации — раскладка A3 сохранена
-    assert len(keyboard.inline_keyboard) == 3
+    # Два ряда номеров (4 + 1) + ряд навигации + ряд «🏠 Меню» (C1) —
+    # раскладка A3 сохранена
+    assert len(keyboard.inline_keyboard) == 4
     assert len(_number_buttons(keyboard)) == LIST_DISPLAY_LIMIT
     # Hash в кнопке пагинации — отпечаток ПОЛНОЙ выдачи (13 фильмов),
     # offset следующей страницы — 5

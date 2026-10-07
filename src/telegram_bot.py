@@ -42,6 +42,26 @@ from dialogue_manager import (
     FEEDBACK_RATING_PROMPT,
     FEEDBACK_SCORE_ACTION,
     FEEDBACK_WATCHED_ACTION,
+    # T10 (add-single-source-mood-genre-constants-t10): единый источник
+    # имён жанров кнопок и текстов запросов — данные живут в
+    # dialogue_manager.py рядом со словарём жанров `mood_to_genre`
+    # (обоснования поднабора и единственности шаблона — там же);
+    # собственные литеральные списки жанров в этом модуле запрещены
+    # (AST-guard tests/test_single_source_mood_genre_t10.py). Шаблон
+    # GENRE_QUERY_TEMPLATE здесь не используется в коде (только в
+    # docstring), поэтому не импортируется — единственность формулировки
+    # гарантирует выводимость GENRE_QUERIES на стороне источника.
+    GENRE_MENU_NAMES,
+    GENRE_QUERIES,
+    # B1 (add-menu-hub-exit-buttons-b1b2): единая подпись/цель кнопки выхода в
+    # хаб «🏠 Меню» — используется в непустой сводке /stats (B2) и в страницах
+    # «📌 Мой список» (render_watchlist_page). Маршрут `menu:main` уже
+    # поддержан диспетчером ниже, новая callback-сущность не вводится.
+    MENU_BUTTON_TEXT,
+    MENU_MAIN_CALLBACK,
+    # T10: подписи кнопок настроения — единый источник рядом со словарями
+    # `mood_triggers`/`mood_to_genre` (см. комментарий GENRE_* выше).
+    MOOD_BUTTON_LABELS,
     MOVIE_CARD_CAPTION_LIMIT,
     PAGE_CALLBACK_PREFIX,
     RANDOM_MOVIE_CALLBACK,
@@ -65,6 +85,7 @@ from watchlist_manager import get_watchlist_manager
 from feedback_manager import get_feedback_manager
 from stats_manager import get_stats_manager
 from statistics_tracker import track_client_request
+from db_migrations import apply_database_migrations
 from config import CURRENT_YEAR
 from guardrails import sanitize_message
 from kinopoisk_client import is_kinopoisk_transient_error
@@ -134,8 +155,12 @@ _WELCOME_HTML = (
 # 🎲 закреплён гайдлайном за «случайный фильм», 🎭 — за подбор по настроению.
 # RANDOM_MOVIE_CALLBACK импортируется из dialogue_manager (B2): тем же
 # литералом собирается кнопка «🎲 Случайный» ряда навигации списка.
+# MOOD_BUTTON_TEXT — намеренно в две строки через `\n` (T3, баг-репорт
+# 04.10.2026): одна строка из 25 символов обрезалась многоточием на узком
+# экране. В inline-клавиатурах `\n` автоматически увеличивает высоту
+# кнопки; truncate_button_text срезает только края — перенос сохраняется.
 RANDOM_MOVIE_BUTTON_TEXT = '🎲 Случайный фильм вечера'
-MOOD_BUTTON_TEXT = '🎭 Подобрать по настроению'
+MOOD_BUTTON_TEXT = '🎭 Подобрать\nпо настроению'
 MOOD_START_CALLBACK = 'mood:start'
 
 # --- Дружелюбные ошибки с выходом (фаза 3, B7, add-onboarding-and-error-recovery) ---
@@ -247,6 +272,9 @@ STATS_MENU_BUTTON_TEXT = '📊 Статистика'
 # приглашение копить статистику; CTA-кнопки — build_exit_keyboard()
 # (переиспользование B7: «🏆 Топ комедий» retry:top + «🎲 Случайный фильм»
 # random:movie, новых callback-сущностей нет, design.md D4).
+# Сводка С ДАННЫМИ идёт с клавиатурой выхода в хаб «🏠 Меню» (`menu:main`,
+# B2, add-menu-hub-exit-buttons-b1b2): политика B7 «без dead-end» соблюдается
+# и для информационного сообщения (константы — общие с watchlist, B1).
 STATS_HEADER = '📊 Ваша киностатистика:'
 STATS_EMPTY_TEXT = (
     '📊 Статистика пока пуста — запросов, оценок и сохранённых фильмов ещё нет.\n'
@@ -265,17 +293,26 @@ def _log_excerpt(text: str, limit: int = _LOG_QUERY_LIMIT) -> str:
 
 
 def build_onboarding_keyboard() -> InlineKeyboardMarkup:
-    """Inline-клавиатура приветствия (B1+B3): мгновенная ценность и «Мой список».
+    """Inline-клавиатура приветствия (B1+B3, раскладка T3): ряд на кнопку.
 
-    Первый ряд — две кнопки мгновенной ценности (B1), второй ряд — быстрый
-    доступ к «📌 Мой список» (B3): переиспользует константу
-    `WATCHLIST_MENU_BUTTON_TEXT` и callback `menu:watchlist` главного меню —
-    диспетчеризация `_MENU_PREFIX` в `_CALLBACK_ROUTES` уже поддержана, ветка
-    watchlist делегирует `handle_watchlist_command` (тот же код, что /list,
-    новых callback-сущностей нет). `_MENU_PREFIX` объявлен ниже по файлу —
-    разрешение имени при вызове, паттерн `CURRENT_YEAR` в `get_top_menu`.
-    Подписи проходят truncate_button_text — лимит 64 символа Bot API
-    гарантирован конструктором, а не «на глаз».
+    ТРИ ряда, каждый — ОДНА кнопка на всю ширину (T3, баг-репорт
+    04.10.2026): раньше первый ряд нёс две длинные подписи («🎲 Случайный
+    фильм вечера» + «🎭 Подобрать по настроению», суммарно 49 символов) —
+    Telegram делил ширину ряда пополам и обрезал подпись многоточием, хотя
+    лимит 64 символа Bot API не нарушался. Теперь подпись настроения в две
+    строки (`\n` в `MOOD_BUTTON_TEXT`) — в inline-клавиатуре высота кнопки
+    от переноса растёт автоматически, без хаков. История B1 (мгновенная
+    ценность) и B3 (быстрый доступ к «📌 Мой список») сохранена: состав,
+    порядок кнопок и callback_data не изменились (на `random:movie` и
+    `mood:start` завязаны retry-маршруты B7). Третий ряд переиспользует
+    константу `WATCHLIST_MENU_BUTTON_TEXT` и callback `menu:watchlist`
+    главного меню — диспетчеризация `_MENU_PREFIX` в `_CALLBACK_ROUTES`
+    уже поддержана, ветка watchlist делегирует `handle_watchlist_command`
+    (тот же код, что /list, новых callback-сущностей нет). `_MENU_PREFIX`
+    объявлен ниже по файлу — разрешение имени при вызове, паттерн
+    `CURRENT_YEAR` в `get_top_menu`. Подписи проходят
+    truncate_button_text — лимит 64 символа Bot API гарантирован
+    конструктором, а не «на глаз».
     """
     return InlineKeyboardMarkup([
         [
@@ -283,6 +320,8 @@ def build_onboarding_keyboard() -> InlineKeyboardMarkup:
                 truncate_button_text(RANDOM_MOVIE_BUTTON_TEXT),
                 callback_data=RANDOM_MOVIE_CALLBACK,
             ),
+        ],
+        [
             InlineKeyboardButton(
                 truncate_button_text(MOOD_BUTTON_TEXT),
                 callback_data=MOOD_START_CALLBACK,
@@ -453,14 +492,20 @@ def build_stats_response(stats: Dict[str, Any]) -> tuple[str, Optional[InlineKey
     Два исхода (третий — сбой хранилища — обрабатывает вызывающий код,
     design.md D4): данные есть — HTML-сводка ТОЛЬКО с ненулевыми строками
     показателей (нулевые опускаются целиком, паттерн year_part в
-    render_watchlist_page) без клавиатуры (информационное сообщение,
-    прецедент — приглашение /mood); все показатели нулевые — дружелюбная
-    заглушка с CTA-клавиатурой build_exit_keyboard() (B7). Числа вставляются
+    render_watchlist_page) с клавиатурой выхода в хаб «🏠 Меню» (один ряд,
+    одна кнопка `menu:main` — общие константы B1 из dialogue_manager;
+    политика B7 «без dead-end»: информационное сообщение тоже предлагает
+    мгновенное действие, новый маршрут не вводится — `menu:main` уже
+    поддержан диспетчером `_MENU_PREFIX`); все показатели нулевые —
+    дружелюбная заглушка с ПРЕЖНЕЙ CTA-клавиатурой build_exit_keyboard()
+    (B7, «🏆 Топ комедий» + «🎲 Случайный фильм»). Числа вставляются
     через html.escape(str(...)): значения из БД числовые, но экранирование
     единообразно и защищает разметку при смене источника (design.md D3).
     Заголовки строк — существительные в родительном падеже («Запросов»,
     «Оценок»), поэтому плюрализация не нужна. Эмодзи — только 📊 заголовка
-    и 🎲 в цитате кнопки заглушки (≤1 на строку, гайдлайн B6).
+    и 🎲 в цитате кнопки заглушки (≤1 на строку, гайдлайн B6); подпись
+    кнопки выхода 🏠 идёт через truncate_button_text (гайдлайн: 🏠 —
+    «выход в главное меню (хаб)»).
     """
     queries = int(stats.get('queries') or 0)
     rated = int(stats.get('rated') or 0)
@@ -485,7 +530,13 @@ def build_stats_response(stats: Dict[str, Any]) -> tuple[str, Optional[InlineKey
         lines.append(f'Отметок «Не моё»: <b>{html.escape(str(nope))}</b>')
     if watchlist:
         lines.append(f'Фильмов в «Мой список»: <b>{html.escape(str(watchlist))}</b>')
-    return '\n'.join(lines) + '\n', None
+    # B2: сводка с данными больше не dead-end — один ряд «🏠 Меню»
+    # (`menu:main`, паттерн одиночной кнопки build_watchlist_open_keyboard).
+    menu_markup = InlineKeyboardMarkup([[InlineKeyboardButton(
+        truncate_button_text(MENU_BUTTON_TEXT),
+        callback_data=MENU_MAIN_CALLBACK,
+    )]])
+    return '\n'.join(lines) + '\n', menu_markup
 
 
 # --- Главное меню и подменю топов (фаза 3, B8, add-inline-menu-callbacks) ---
@@ -498,6 +549,14 @@ def build_stats_response(stats: Dict[str, Any]) -> tuple[str, Optional[InlineKey
 # маршрутами `_CALLBACK_ROUTES` (`startswith`-коллизий нет: `menu:` ≠ `mood:`).
 _MENU_PREFIX = 'menu:'
 _TOP_PREFIX = 'top:'
+# Суб-префикс маршрута `mood:` (T5, add-mood-genre-inline-keyboards-t5t6,
+# design.md D3): `mood:pick:{ключ словаря настроений}` — тап кнопки выбора
+# настроения, `mood:start` — прежнее приглашение. НОВЫЙ префикс в
+# `_CALLBACK_ROUTES` НЕ добавляется: разбор сегмента живёт внутри
+# `_handle_mood_callback` по образцу суб-диспетчеризации `fb:`/`menu:`/`top:`,
+# `startswith`-коллизии нет ('mood:pick:…' ≠ 'mood:start'), таблица маршрутов
+# (контракт тестов фазы 1) не меняется.
+_MOOD_PICK_PREFIX = 'mood:pick:'
 # Тексты меню — константы (единый источник для команд и callback-маршрутов,
 # образец `_MOOD_PROMPT_HTML`, A6). Эмодзи — строго гайдлайн B6
 # (docs/emoji_guideline.md): 🎭 настроение, 🏆 топ, 🎬 фильм, 🎲 случайный,
@@ -529,6 +588,45 @@ _TOP_QUERY_BY_SEGMENT: Dict[str, str] = {
     f'movies:{CURRENT_YEAR}': f'топ фильмов {CURRENT_YEAR}',
     f'series:{CURRENT_YEAR}': f'топ сериалов {CURRENT_YEAR}',
 }
+
+# --- Клавиатура выбора настроения (T5, баг 3a, add-mood-genre-inline-keyboards-t5t6) ---
+# Подписи кнопок настроения — `MOOD_BUTTON_LABELS` (единый источник, импорт
+# из dialogue_manager.py, T10 add-single-source-mood-genre-constants-t10):
+# данные кнопок живут рядом со словарями `mood_triggers`/`mood_to_genre`,
+# обоснования (инвариант ключей, эмодзи-гайдлайн) — там же; собственный
+# словарь подписей в этом модуле запрещён (AST-guard
+# tests/test_single_source_mood_genre_t10.py).
+# Раскладка клавиатуры настроения: по две кнопки в ряд (design.md D2). Подписи
+# короткие (≤17 символов), поэтому перенос `\n` не нужен (в отличие от T3,
+# где две длинные кнопки онбординга обрезались на узком экране). Раскладка —
+# презентация Telegram, поэтому остаётся в модуле бота (design.md D3 T10).
+_MOOD_BUTTONS_PER_ROW = 2
+
+# --- Клавиатура выбора жанра (T6, баг 3b, add-mood-genre-inline-keyboards-t5t6) ---
+# В отличие от `mood:` (T5) здесь нужен ОТДЕЛЬНЫЙ префикс таблицы маршрутов:
+# существующего callback-маршрута жанра нет (`/genre` — команда, `menu:genre` —
+# сегмент меню), поэтому суб-диспетчеризация внутри чужого префикса невозможна
+# (design.md D10). `startswith`-коллизий нет: 'genre:' уникален среди префиксов
+# `_CALLBACK_ROUTES` (контракт-тест tests/test_callback_routes_t4.py).
+_GENRE_PREFIX = 'genre:'
+# Суб-префикс выбора жанра: `genre:pick:{имя жанра}` (паттерн `mood:pick:` T5)
+_GENRE_PICK_PREFIX = 'genre:pick:'
+# Сегмент «⬅️ Назад» меню жанров — паритет с `top:menu` подменю топов (B8):
+# возврат к главному меню обрабатывается тем же маршрутом `genre:`
+_GENRE_MENU_SEGMENT = 'genre:menu'
+# Имена жанров на кнопках, шаблон запроса и словарь запросов —
+# `GENRE_MENU_NAMES`, `GENRE_QUERY_TEMPLATE`, `GENRE_QUERIES` (единый
+# источник, импорт из dialogue_manager.py, T10
+# add-single-source-mood-genre-constants-t10): обоснования поднабора 12 из
+# 19, инварианта «имя ∈ значения `mood_to_genre`» и единственности шаблона
+# живут там же, рядом со словарём жанров; собственные литеральные списки
+# жанров в этом модуле запрещены (AST-guard
+# tests/test_single_source_mood_genre_t10.py).
+# Раскладка меню жанров: по две кнопки в ряд (паттерн `_MOOD_BUTTONS_PER_ROW`,
+# design.md D2). Подписи короткие (≤11 символов), перенос `\n` не нужен;
+# сумма длин подписей ряда ≤44 символа — эвристика читаемости, которую
+# закрепит guard-тест T7.
+_GENRE_BUTTONS_PER_ROW = 2
 
 # --- Альбом постеров топа (фаза 3, C6, add-top-media-group-album) ---
 # Лимиты Bot API для media group: 2–10 элементов на альбом. Меньше двух
@@ -589,6 +687,115 @@ def get_top_menu() -> InlineKeyboardMarkup:
             InlineKeyboardButton(truncate_button_text("⬅️ Назад"), callback_data=f"{_TOP_PREFIX}menu"),
         ],
     ])
+
+
+def build_mood_keyboard() -> InlineKeyboardMarkup:
+    """Клавиатура выбора настроения (T5): 8 кнопок по 2 в ряд + «🏠 Меню».
+
+    Крепится к НЕИЗМЕННОМУ тексту приглашения `_MOOD_PROMPT_HTML` во всех трёх
+    точках входа (`/mood`, `mood:start`, `menu:mood` — design.md D5): подбор по
+    настроению становится доступен в один тап, а ручной ввод остаётся fallback'ом.
+
+    Состав и ПОРЯДОК кнопок выводятся обходом `dialogue_manager.mood_triggers`
+    — единственного источника ключей настроений (риск T5: второй хардкод-список
+    рассинхронизировался бы со словарём и сломал детерминированный prefilter
+    B6). Подписи берутся из `MOOD_BUTTON_LABELS` (единый источник T10 —
+    импорт из dialogue_manager.py); для ключа без подписи
+    используется резерв `key.title()` и пишется warning — расхождение словарей
+    не должно ронять бота (design.md D1).
+
+    Подписи проходят `truncate_button_text`: лимит 64 символа Bot API
+    гарантирован конструктором (паттерн B1/B8). `callback_data`
+    `mood:pick:{ключ}` — 10 байт префикса + ключ словаря (≤9 кириллических
+    символов ≈ 18 байт), заведомо меньше лимита 64 байта (design.md D8).
+    Заключительный ряд — выход в хаб: подпись «🏠 Меню» (общая константа B1
+    `MENU_BUTTON_TEXT`), маршрут прежний — `MENU_MAIN_CALLBACK` == `'menu:main'`;
+    до C2 здесь была подпись контекстного возврата «⬅️ Назад». Правило выбора
+    стиля и происхождение расхождения с подменю топов/жанров не дублируются:
+    подраздел «Кнопки возврата: два стиля» (docs/emoji_guideline.md) и design.md
+    D3 изменения unify-back-button-emoji-c2.
+    """
+    rows: list[list[InlineKeyboardButton]] = []
+    current_row: list[InlineKeyboardButton] = []
+    for mood_key in dialogue_manager.mood_triggers:
+        text = MOOD_BUTTON_LABELS.get(mood_key)
+        if text is None:
+            # Рассинхрон словаря подписей и `mood_triggers`: ключ валиден,
+            # поэтому кнопка остаётся работоспособной с резервной подписью
+            text = mood_key.title()
+            logger.warning(
+                f"Нет подписи кнопки настроения для ключа {mood_key!r} — резерв {text!r} "
+                f"(дополните MOOD_BUTTON_LABELS в dialogue_manager.py и docs/emoji_guideline.md)"
+            )
+        current_row.append(
+            InlineKeyboardButton(truncate_button_text(text), callback_data=f"{_MOOD_PICK_PREFIX}{mood_key}")
+        )
+        if len(current_row) == _MOOD_BUTTONS_PER_ROW:
+            rows.append(current_row)
+            current_row = []
+    if current_row:
+        # Нечётное число ключей словаря — последняя кнопка остаётся одна в ряду
+        rows.append(current_row)
+    # C2: заключительный ряд — выход в хаб, поэтому подпись «🏠 Меню», а не
+    # «⬅️ Назад» (правило двух стилей docs/emoji_guideline.md: 🏠 ⇔ маршрут
+    # `menu:main`, ⬅️ ⇔ контекстный возврат). Маршрут НЕ меняется — пара
+    # констант B1 из dialogue_manager.py (единый источник подписи и цели).
+    rows.append([
+        InlineKeyboardButton(truncate_button_text(MENU_BUTTON_TEXT), callback_data=MENU_MAIN_CALLBACK),
+    ])
+    return InlineKeyboardMarkup(rows)
+
+
+def build_genre_menu() -> InlineKeyboardMarkup:
+    """Меню выбора жанра (T6): 12 кнопок по 2 в ряд + «⬅️ Назад» (`genre:menu`).
+
+    Крепится к НЕИЗМЕННОМУ тексту приглашения `_GENRE_PROMPT_TEXT` в точках
+    входа `/genre` и `menu:genre` (design.md D10): подбор по жанру становится
+    доступен в один тап, а ручной ввод жанра остаётся fallback'ом. Текст
+    приглашения не меняется — на него завязан контракт-тест
+    tests/test_menu_callbacks_b8.py.
+
+    Состав и ПОРЯДОК кнопок — `GENRE_MENU_NAMES` (единый источник T10 —
+    импорт из dialogue_manager.py; стабильный поднабор
+    значений `dialogue_manager.mood_to_genre`, инвариант «каждое имя ∈
+    значения словаря» зафиксирован тестом, второй независимый список жанров
+    запрещён). Подпись — имя жанра с заглавной буквы через
+    `truncate_button_text` (лимит 64 символа Bot API гарантирован
+    конструктором, паттерн B1/B8); БЕЗ отдельного словаря подписей — иначе
+    появился бы второй источник текста кнопок.
+
+    Эмодзи на жанровых кнопках НЕТ (чек-лист п.1 гайдлайна B6 «нужен ли эмодзи
+    вообще»): одинаковый символ на 12 кнопках не несёт различающего смысла и
+    дублируется словом (правило 3 гайдлайна «не дублировать смысл»), а текст
+    без эмодзи — допустимая норма (образец `_KEYBOARD_REMOVAL_STUB_TEXT`).
+    🎬 остаётся закреплённым за смыслом «фильм» и используется в пункте меню
+    «🎬 Поиск по жанру»; новые символы в гайдлайн не добавляются.
+
+    `callback_data` `genre:pick:{имя}` — 11 байт префикса + имя жанра
+    (≤11 кириллических символов ≈ 22 байта), итого ≤33 байта при лимите 64
+    (design.md D8, риск 9 бэклога). «⬅️ Назад» (`genre:menu`) возвращает
+    главное меню — паритет с `top:menu` подменю топов.
+    """
+    rows: list[list[InlineKeyboardButton]] = []
+    current_row: list[InlineKeyboardButton] = []
+    for genre_name in GENRE_MENU_NAMES:
+        current_row.append(
+            InlineKeyboardButton(
+                truncate_button_text(genre_name.capitalize()),
+                callback_data=f"{_GENRE_PICK_PREFIX}{genre_name}",
+            )
+        )
+        if len(current_row) == _GENRE_BUTTONS_PER_ROW:
+            rows.append(current_row)
+            current_row = []
+    if current_row:
+        # Нечётное число имён — последняя кнопка остаётся одна в ряду
+        rows.append(current_row)
+    rows.append([
+        InlineKeyboardButton(truncate_button_text("⬅️ Назад"), callback_data=_GENRE_MENU_SEGMENT),
+    ])
+    return InlineKeyboardMarkup(rows)
+
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Онбординг «ценность сразу» (B1): короткое приветствие + кнопки.
@@ -658,8 +865,10 @@ async def handle_top_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await update.message.reply_text(_TOP_MENU_TITLE, reply_markup=get_top_menu())
 
 async def handle_genre_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Приглашение жанра — общая константа с callback-маршрутом `menu:genre` (B8)
-    await update.message.reply_text(_GENRE_PROMPT_TEXT)
+    # Приглашение жанра — общая константа с callback-маршрутом `menu:genre` (B8).
+    # T6 (баг 3b): к НЕИЗМЕННОМУ тексту приглашения крепится inline-меню
+    # выбора жанра — подбор в один тап, ручной ввод жанра остаётся fallback'ом
+    await update.message.reply_text(_GENRE_PROMPT_TEXT, reply_markup=build_genre_menu())
 
 def _message_user_id(update: Update) -> str:
     """user_id отправителя текстового сообщения либо пустая строка.
@@ -705,7 +914,10 @@ async def _mark_awaiting_mood(user_id: str) -> None:
 
 
 async def handle_mood_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(_MOOD_PROMPT_HTML, parse_mode='HTML')
+    # T5: приглашение доставляется ВМЕСТЕ с клавиатурой выбора настроения
+    # (`build_mood_keyboard`), текст и parse_mode не меняются — ручной ввод
+    # настроения остаётся fallback'ом (design.md D5)
+    await update.message.reply_text(_MOOD_PROMPT_HTML, parse_mode='HTML', reply_markup=build_mood_keyboard())
     # Признак ожидания ответа ставится ПОСЛЕ отправки приглашения (D6):
     # сбой хранилища сессий не должен ломать доставку
     await _mark_awaiting_mood(_message_user_id(update))
@@ -1470,23 +1682,73 @@ async def _handle_random_callback(update: Update, context: ContextTypes.DEFAULT_
 
 
 async def _handle_mood_callback(update: Update, context: ContextTypes.DEFAULT_TYPE, query: Any, data: str) -> None:
-    """Кнопка «🎭 Подобрать по настроению» из онбординга (B1).
+    """Маршрут `mood:`: приглашение «по настроению» (B1) и выбор настроением (T5).
 
-    Тот же текст приглашения, что у команды /mood (единый источник
-    `_MOOD_PROMPT_HTML` — DRY). Отправляется НОВЫМ сообщением: кнопки
-    онбординга под приветствием сохраняются, повторный тап не лишает
-    пользователя выбора. LLM не вызывается, dead-end исключён.
+    Суб-диспетчеризация по сегменту внутри существующего префикса (design.md
+    D3, образец `fb:`/`menu:`/`top:` — НОВЫЙ префикс в `_CALLBACK_ROUTES` не
+    добавляется, таблица маршрутов фазы 1 не меняется):
 
-    Сбой доставки — ошибка с целью повтора `mood` (minor m4, design.md D3):
-    «🔄 Повторить» повторяет ТУ ЖЕ операцию, а не случайный фильм.
+    - `mood:pick:{ключ}` (T5) — тап кнопки клавиатуры настроения. Запросом
+      служит ПЕРВАЯ фраза-триггер ключа из `dialogue_manager.mood_triggers`,
+      поэтому детерминированный mood-префильтр (B6) распознаёт её БЕЗ вызова
+      LLM-классификатора (инвариант по всем ключам зафиксирован тестом
+      tests/test_mood_keyboard_t5.py). Клик учитывается в клиентской
+      статистике (как у `top:`). Признак `_awaiting_mood` на этом пути НЕ
+      ставится: кнопочный путь детерминирован и не должен зависеть от
+      in-memory состояния сессий (риск 4 бэклога, design.md D5).
+    - прочее (`mood:start` — кнопка онбординга, делегирование `menu:mood`,
+      повтор `retry:mood`) — прежнее приглашение: тот же текст
+      `_MOOD_PROMPT_HTML`, что у команды /mood (единый источник — DRY),
+      отправленный НОВЫМ сообщением (кнопки онбординга под приветствием
+      сохраняются, повторный тап не лишает пользователя выбора), с T5 —
+      вместе с клавиатурой выбора настроения. LLM не вызывается, dead-end
+      исключён.
 
-    После успешной доставки в сессии отмечается ожидание ответа о
+    Отказоустойчивость (B7, design.md D6): неизвестный ключ настроения —
+    объяснение «кнопка устарела» с кнопками выхода; неопределённый инициатор —
+    подсказка написать настроение текстом (ручной ввод остаётся рабочим
+    fallback'ом); сбой доставки приглашения — ошибка с целью повтора `mood`
+    (minor m4: «🔄 Повторить» повторяет ТУ ЖЕ операцию, а не случайный фильм);
+    сбой подбора — классифицированная ошибка с «🔄 Повторить», цель которого
+    ПОЛНЫЙ `callback_data` (`retry:mood:pick:{ключ}` — ветка в
+    `_handle_retry_callback`).
+
+    После успешной доставки приглашения в сессии отмечается ожидание ответа о
     настроении (B1, fix-mood-offtopic-b1): следующий короткий ответ
     («устал») пойдёт детерминированным mood-маршрутом, а не в
     LLM-классификатор, который трактует голое состояние как offtopic.
     """
+    if data.startswith(_MOOD_PICK_PREFIX):
+        mood_key = data[len(_MOOD_PICK_PREFIX):]
+        phrases = dialogue_manager.mood_triggers.get(mood_key)
+        if not phrases:
+            # Ключа нет в словаре (устаревшая кнопка) ИЛИ список фраз пуст
+            # (правка словаря): без этой ветки `phrases[0]` дал бы IndexError.
+            # Ответ — как у неизвестного сегмента `menu:`/`top:` (B7)
+            logger.warning(f"Неизвестный ключ настроения в callback_data: {data!r}")
+            await _callback_failure(query, _ERROR_TEXT_UNKNOWN_CALLBACK, build_unknown_callback_keyboard())
+            return
+        phrase = phrases[0]
+        user_id = _callback_user_id(update, query)
+        if not user_id:
+            # Следующий шаг — ручной ввод: настроение текстом распознаёт тот же
+            # детерминированный маршрут (образец подсказки — `_handle_top_callback`)
+            await _callback_failure(query, "Не удалось определить пользователя. Напишите настроение текстом — подберу кино.")
+            return
+        track_client_request(f"tg:{user_id}")
+        try:
+            await _run_dialogue_query(update, query, user_id, phrase)
+        except Exception as e:
+            # Цель повтора — ПОЛНЫЙ callback_data (`retry:mood:pick:{ключ}`):
+            # повтор запускает тот же подбор, а не приглашение (design.md D6)
+            logger.error(f"Ошибка подбора по настроению {_log_excerpt(phrase)!r}: {e}", exc_info=True)
+            error_text, error_markup = build_error_reply(e, data)
+            await _callback_failure(query, error_text, error_markup)
+        return
     try:
-        await query.message.reply_text(_MOOD_PROMPT_HTML, parse_mode='HTML')
+        # T5: тот же текст приглашения + клавиатура выбора настроения —
+        # покрывает и `menu:mood`/`retry:mood` (делегируют сюда, design.md D5)
+        await query.message.reply_text(_MOOD_PROMPT_HTML, parse_mode='HTML', reply_markup=build_mood_keyboard())
     except Exception as e:
         logger.error(f"Ошибка обработки callback «по настроению»: {e}", exc_info=True)
         error_text, error_markup = build_error_reply(e, 'mood')
@@ -1572,7 +1834,9 @@ async def _handle_menu_callback(update: Update, context: ContextTypes.DEFAULT_TY
         if action == 'top':
             await query.message.reply_text(_TOP_MENU_TITLE, reply_markup=get_top_menu())
         elif action == 'genre':
-            await query.message.reply_text(_GENRE_PROMPT_TEXT)
+            # T6: тот же текст приглашения, что у команды /genre, плюс
+            # inline-меню выбора жанра (единый источник — константы)
+            await query.message.reply_text(_GENRE_PROMPT_TEXT, reply_markup=build_genre_menu())
         elif action == 'new':
             user_id = _callback_user_id(update, query)
             if not user_id:
@@ -1643,6 +1907,61 @@ async def _handle_top_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         await _callback_failure(query, error_text, error_markup)
 
 
+async def _handle_genre_callback(update: Update, context: ContextTypes.DEFAULT_TYPE, query: Any, data: str) -> None:
+    """Маршрут `genre:` (T6, баг 3b): выбор жанра кнопкой, суб-диспетчеризация.
+
+    Сегменты: `genre:menu` — возврат к главному меню (паритет с `top:menu`,
+    design.md D10); `genre:pick:{имя жанра}` — запуск LLM-пайплайна
+    `_run_dialogue_query` с текстом из `GENRE_QUERIES` (единый источник
+    формулировки T10 — импорт из dialogue_manager.py, выводимый из
+    `GENRE_QUERY_TEMPLATE`; промпты
+    `src/prompts/*.txt` не меняются — риск 5 бэклога).
+
+    Паттерн повторяет `_handle_top_callback` (B8) и клавиатуру настроения (T5):
+    клик учитывается в клиентской статистике, неизвестный жанр — объяснение с
+    кнопками выхода (B7, без dead-end), сбой — классифицированная ошибка с
+    «🔄 Повторить» по цели `retry:genre:pick:{имя}` (ПОЛНЫЙ callback_data,
+    ≤64 байта; разбор повторится в маршруте). Если пользователя определить не
+    удалось, предлагается рабочий fallback — написать запрос текстом.
+
+    Отдельный префикс в `_CALLBACK_ROUTES` обязателен (в отличие от `mood:`):
+    существующего callback-маршрута жанра нет, суб-диспетчеризация внутри
+    чужого префикса невозможна. Коллизий `startswith` нет: 'genre:' уникален.
+    """
+    if data == _GENRE_MENU_SEGMENT:
+        try:
+            await query.message.reply_text(_BACK_TO_MAIN_TEXT, reply_markup=get_main_menu())
+        except Exception as e:
+            logger.error(f"Ошибка возврата в главное меню из меню жанров: {e}", exc_info=True)
+            error_text, error_markup = build_error_reply(e)
+            await _callback_failure(query, error_text, error_markup)
+        return
+    genre_name = data[len(_GENRE_PICK_PREFIX):] if data.startswith(_GENRE_PICK_PREFIX) else ''
+    request_text = GENRE_QUERIES.get(genre_name) if genre_name else None
+    if request_text is None:
+        # Неизвестный/устаревший сегмент жанра (старая кнопка, ручной
+        # callback) — объяснение с действиями-выходами, без тупика (B7)
+        logger.warning(f"Неизвестный жанр в callback_data: {data!r}")
+        await _callback_failure(query, _ERROR_TEXT_UNKNOWN_CALLBACK, build_unknown_callback_keyboard())
+        return
+    user_id = _callback_user_id(update, query)
+    if not user_id:
+        # Следующий шаг — ручной ввод: тот же текст запроса жанра уходит в
+        # LLM-пайплайн и даёт тот же результат (образец ветки top:)
+        await _callback_failure(query, f"Не удалось определить пользователя. Напишите «{request_text}» текстом — подберу фильмы.")
+        return
+    track_client_request(f"tg:{user_id}")
+    try:
+        await _run_dialogue_query(update, query, user_id, request_text)
+    except Exception as e:
+        # Классифицированная ошибка (B7) с повтором ТОГО ЖЕ запроса жанра:
+        # цель — полный callback_data (`retry:genre:pick:комедия`), образец —
+        # ветки top:/save:/fb: в _handle_retry_callback
+        logger.error(f"Ошибка обработки callback жанра {_log_excerpt(request_text)!r}: {e}", exc_info=True)
+        error_text, error_markup = build_error_reply(e, data)
+        await _callback_failure(query, error_text, error_markup)
+
+
 async def _handle_retry_callback(update: Update, context: ContextTypes.DEFAULT_TYPE, query: Any, data: str) -> None:
     """Кнопка «🔄 Повторить» (B7): повтор операции по цели `retry:{target}`.
 
@@ -1653,7 +1972,9 @@ async def _handle_retry_callback(update: Update, context: ContextTypes.DEFAULT_T
     `top` — запрос «топ комедий», `alt`/`back` — повтор соответствующего
     маршрута, `info:{id}`/`similar:{id}`/`page:{offset}:{hash}` — повтор с
     восстановленным callback_data (≤64 байт), `menu:…`/`top:…` — повтор
-    того же действия меню/топа (B8). Результат доставляется общими
+    того же действия меню/топа (B8), `mood:pick:{ключ}` — повтор подбора по
+    настроению (T5), `genre:pick:{жанр}`/`genre:menu` — повтор подбора по
+    жанру и возврата в меню (T6). Результат доставляется общими
     правилами маршрута (`_edit_or_send`); сбой повтора классифицируется тем
     же контуром, рекурсивного падения нет.
     """
@@ -1665,6 +1986,15 @@ async def _handle_retry_callback(update: Update, context: ContextTypes.DEFAULT_T
         # minor m4: повтор приглашения «по настроению» — та же операция,
         # которую предлагала кнопка «🔄 Повторить» (design.md D3)
         await _handle_mood_callback(update, context, query, MOOD_START_CALLBACK)
+        return
+    if target.startswith(_MOOD_PICK_PREFIX):
+        # T5 (add-mood-genre-inline-keyboards-t5t6, design.md D6): повтор
+        # подбора по настроению — target содержит ПОЛНЫЙ callback_data
+        # (`mood:pick:{ключ}`), разбор повторится в маршруте (образец — ветки
+        # `top:`/`menu:`/`fb:`). Ветка стоит ПОСЛЕ точной цели 'mood'
+        # (приглашение) и ДО резервного «неизвестная цель повтора»; коллизии
+        # `startswith` нет: 'mood:pick:…' ≠ 'mood'
+        await _handle_mood_callback(update, context, query, target)
         return
     if target == 'alt':
         await _handle_alternative_callback(update, context, query, 'alt:list')
@@ -1710,6 +2040,14 @@ async def _handle_retry_callback(update: Update, context: ContextTypes.DEFAULT_T
         # Ветка стоит ДО exact-цели 'top' (B7, «топ комедий») — коллизии
         # `startswith` нет: 'top:…' ≠ 'top' (design.md D5)
         await _handle_top_callback(update, context, query, target)
+        return
+    if target.startswith(_GENRE_PREFIX):
+        # T6 (add-mood-genre-inline-keyboards-t5t6, design.md D10): повтор
+        # подбора по жанру — target содержит ПОЛНЫЙ callback_data
+        # (`genre:pick:{жанр}`/`genre:menu`), разбор повторится в маршруте
+        # (образец — ветки top:/menu:/fb:). Точной цели 'genre' в повторах
+        # нет, поэтому коллизии `startswith` не возникает
+        await _handle_genre_callback(update, context, query, target)
         return
     if target.startswith(_MENU_PREFIX):
         # B8 (minor m1 ревью): повтор действия меню после сбоя делегирования —
@@ -2060,6 +2398,9 @@ _CALLBACK_ROUTES: tuple[tuple[str, _CallbackRoute], ...] = (
     ("back:", _handle_back_callback),
     # B1: случайный фильм вечера и приглашение «по настроению»
     ("random:", _handle_random_callback),
+    # T5: внутри префикса `mood:` — суб-диспетчеризация по сегменту
+    # (`mood:start` — приглашение, `mood:pick:{ключ}` — подбор по настроению),
+    # отдельная строка таблицы НЕ добавляется (design.md D3)
     ("mood:", _handle_mood_callback),
     # B7: повтор операции после ошибки
     ("retry:", _handle_retry_callback),
@@ -2081,6 +2422,12 @@ _CALLBACK_ROUTES: tuple[tuple[str, _CallbackRoute], ...] = (
     # уникален; внутри retry: цель 'top:…' проверяется раньше exact-'top'
     (_MENU_PREFIX, _handle_menu_callback),
     (_TOP_PREFIX, _handle_top_callback),
+    # T6: меню выбора жанра — новый префикс (существующего callback-маршрута
+    # жанра нет: `/genre` команда, `menu:genre` сегмент меню). Суб-
+    # диспетчеризация по сегменту внутри обработчика (`genre:menu` — возврат
+    # к главному меню, `genre:pick:{жанр}` — подбор). Коллизий `startswith`
+    # нет: 'genre:' уникален среди префиксов таблицы (design.md D10)
+    (_GENRE_PREFIX, _handle_genre_callback),
 )
 
 
@@ -2091,12 +2438,15 @@ async def handle_movie_detail(update: Update, context: ContextTypes.DEFAULT_TYPE
     тестами; фактически обрабатывает все маршруты списка и карточки
     (A3/A4/B1/B3/B7/B8): `info:` — карточка, `alt:` — другие варианты,
     `similar:` — похожие, `back:` — возврат к списку, `random:` —
-    случайный фильм вечера, `mood:` — приглашение «по настроению»,
+    случайный фильм вечера, `mood:` — приглашение «по настроению» и выбор
+    настроения кнопкой `mood:pick:{ключ}` (T5),
     `retry:` — повтор операции после ошибки, `page:` — следующая страница
     списка выдачи, `save:`/`unsave:`/`watchlist:`/`wpage:` — операции
     списка «📌 Мой список» (B4), `fb:` — обратная связь нейтральными
     эмодзи: панель оценки, реакции и оценки 1–10 (B5), `menu:`/`top:` —
-    действия главного меню и подменю топов (B8, замена reply-клавиатур).
+    действия главного меню и подменю топов (B8, замена reply-клавиатур),
+    `genre:` — меню выбора жанра: возврат к главному меню (`genre:menu`) и
+    подбор по жанру в один тап (`genre:pick:{жанр}`, T6).
     Неизвестный
     префикс — объяснение с кнопками возврата (B7: без dead-end, вместо
     прежнего голого текста-тупика). `answer()` вызывается на любой
@@ -2190,6 +2540,15 @@ def main():
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     if not token:
         raise ValueError("TELEGRAM_BOT_TOKEN не найден в .env")
+    # Штатный путь подготовки схемы БД (бэклог T11/T12): до сборки приложения
+    # накатываем Alembic-миграции (`alembic upgrade head`, идемпотентно) —
+    # таблицы фидбека/списка/статистики не требуют ручного `python init_db.py`.
+    # Хелпер fail-silent (ERROR-лог, бот стартует даже без БД), пропуск —
+    # через RUN_MIGRATIONS=false; единственный раннер миграций — бот
+    # (веб-процесс `src/app.py` схему не изменяет). Легаси-хук create_all —
+    # `db_bootstrap.ensure_database_schema()` (design.md D5 изменения
+    # add-migrations-startup-deploy-t12).
+    apply_database_migrations()
     application = create_telegram_app()
     logger.info("Telegram бот запущен в режиме polling...")
     application.run_polling(drop_pending_updates=True)

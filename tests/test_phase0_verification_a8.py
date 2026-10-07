@@ -90,7 +90,8 @@ def test_legacy_list_renders_without_new_field_traces():
     assert len(response.splitlines()) == LIST_DISPLAY_LIMIT + 1
     assert '🍅' not in response and '<a href' not in response
     assert 'None' not in response and '()' not in response
-    # Ровно 5 номерных кнопок (ряды до навигационного), а не «не больше ряда»
+    # Ровно 5 номерных кнопок (ряды до навигационного и выходного ряда
+    # «🏠 Меню», C1), а не «не больше ряда»
     buttons = number_buttons(keyboard)
     assert len(buttons) == LIST_DISPLAY_LIMIT
     assert [b.callback_data for b in buttons] == [f'info:{i}' for i in range(1, 6)]

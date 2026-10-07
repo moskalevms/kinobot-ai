@@ -52,8 +52,8 @@ def test_thirteen_movies_render_only_five():
 
     # Заголовок + ровно 5 строк фильмов
     assert len(response.splitlines()) == 6
-    # A3: два ряда номеров (4 + 1) и отдельный ряд навигации под ними
-    assert len(keyboard.inline_keyboard) == 3
+    # A3: два ряда номеров (4 + 1), ряд навигации и ряд «🏠 Меню» (C1)
+    assert len(keyboard.inline_keyboard) == 4
     for i in range(1, 6):
         # Название — ссылка (kinopoisk_url в _movie присутствует)
         assert f'{i}. <b><a href=' in response
@@ -69,8 +69,9 @@ def test_thirteen_movies_render_only_five():
         f'info:{i}' for i in range(1, 6)
     ]
     # Ряд навигации — отдельный, под номерами (B2: три контекстных quick
-    # replies — другие варианты / следующая страница / случайный фильм)
-    nav_row = keyboard.inline_keyboard[-1]
+    # replies — другие варианты / следующая страница / случайный фильм);
+    # последний ряд клавиатуры — выход в хаб «🏠 Меню» (C1)
+    nav_row = keyboard.inline_keyboard[-2]
     assert [b.text for b in nav_row] == ['🔄 Другие', '⬇️ Ещё 5', '🎲 Случайный']
     assert nav_row[0].callback_data == 'alt:list'
     assert nav_row[1].callback_data.startswith('page:5:')
@@ -85,8 +86,8 @@ def test_fewer_movies_than_limit_all_rendered():
     response, keyboard = dm._generate_list_response(movies, 'Заголовок')
 
     assert len(response.splitlines()) == 4
-    # A3: один ряд номеров (3 кнопки) + ряд навигации
-    assert len(keyboard.inline_keyboard) == 2
+    # A3: один ряд номеров (3 кнопки) + ряд навигации + ряд «🏠 Меню» (C1)
+    assert len(keyboard.inline_keyboard) == 3
     assert len(keyboard.inline_keyboard[0]) == 3
 
 
@@ -108,8 +109,38 @@ def test_full_list_stays_in_session_and_movies_list():
     assert len(session.last_movies) == 13
     # Отображение — 5 фильмов (заголовок + 5 строк)
     assert len(result['response'].splitlines()) == 6
-    # A3: два ряда номеров (4 + 1) + ряд навигации
-    assert len(result['reply_markup'].inline_keyboard) == 3
+    # A3: два ряда номеров (4 + 1) + ряд навигации + ряд «🏠 Меню» (C1)
+    assert len(result['reply_markup'].inline_keyboard) == 4
+
+
+# --- (C1) Выход в хаб «🏠 Меню» — заключительный ряд клавиатуры списка ---
+
+
+def test_menu_hub_exit_is_last_row_on_both_branches():
+    """C1: ряд «🏠 Меню» (`menu:main`) — ВСЕГДА последний ряд списка.
+
+    Проверены ОБЕ ветки клавиатуры выдачи: с кнопкой «⬇️ Ещё 5» (в выдаче
+    остались неотображённые фильмы) и последняя страница (без «⬇️ Ещё 5»).
+    Ряд навигации при этом остаётся предпоследним — его состав не меняется.
+    """
+    dm = _manager()
+    movies = [_movie(id=i, title=f'Фильм {i}') for i in range(1, 14)]
+
+    for offset in (0, 10):
+        _, keyboard = dm._generate_list_response(
+            movies, 'Заголовок', offset=offset,
+        )
+
+        # Последний ряд — ровно одна кнопка выхода в хаб
+        menu_row = keyboard.inline_keyboard[-1]
+        assert len(menu_row) == 1
+        assert menu_row[0].callback_data == 'menu:main'
+        assert menu_row[0].text.startswith('🏠')
+        # Nav-ряд — предпоследний, состав прежний (B2): «🔄 Другие» первый,
+        # «🎲 Случайный» последний
+        nav_row = keyboard.inline_keyboard[-2]
+        assert nav_row[0].callback_data == 'alt:list'
+        assert nav_row[-1].callback_data == 'random:movie'
 
 
 # --- (б) Полный формат строки ---

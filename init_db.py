@@ -1,14 +1,24 @@
 # init_db.py
-# Единая точка инициализации базы данных: модели берутся из
-# src/models/database.py, дублирующих определений нет.
+# CLI-инициализатор базы данных: тонкая обёртка — миграции схемы + админ.
+# Единственная точка эволюции схемы — каталог migrations/ (alembic upgrade
+# head через хелпер apply_database_migrations() из src/db_migrations.py),
+# источник моделей — src/models/database.py; этот файл схему НЕ определяет
+# (ни сырых DDL, ни повторных объявлений колонок — дублей модели нет).
 # Все таблицы — включая rt_scores (кэш оценок Rotten Tomatoes, модель
 # RtScore), watchlist («📌 Мой список» пользователя, Epic B/B4, модель
 # Watchlist), movie_feedback (реакции и оценки пользователя по фильмам,
 # Epic B/B5, модель MovieFeedback) и offtopic_refusals (метрики
 # офтопик-отказов guardrails, Epic B/B7, модель OfftopicRefusal) —
-# создаются вызовом db.create_all() ниже; их схемы определены только в
-# src/models/database.py и здесь НЕ дублируются (openspec changes
-# add-watchlist, add-movie-feedback, add-offtopic-metrics-b7).
+# создаются миграциями (baseline migrations/versions/0001_initial.py); их
+# схемы определены только в src/models/database.py и здесь НЕ дублируются
+# (openspec changes add-watchlist, add-movie-feedback,
+# add-offtopic-metrics-b7, update-init-db-thin-wrapper-t14).
+# Аварийный выключатель оператора RUN_MIGRATIONS=false (также 0/no)
+# уважается: хелпер вернёт True БЕЗ наката схемы и без подключения к БД —
+# скрипт напечатает нейтральное сообщение о ПРОПУСКЕ (а не об успехе наката:
+# случай различается публичным read-only флагом
+# db_migrations.migrations_disabled(), логика хелпера здесь не дублируется)
+# и продолжит создание админа (схема при этом не изменяется).
 import os
 import sys
 
@@ -20,6 +30,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from flask import Flask
+from db_migrations import apply_database_migrations, migrations_disabled
 from models.database import db, User, Role
 
 # Создаем Flask приложение только для привязки SQLAlchemy
@@ -33,12 +44,30 @@ db.init_app(app)
 
 
 def init_database():
-    """Инициализация базы данных"""
-    with app.app_context():
-        print("🔄 Создание таблиц...")
-        db.create_all()
-        print("✅ Таблицы созданы")
+    """Инициализация базы данных: миграции схемы, затем создание админа"""
+    # Схема — только через миграции (alembic upgrade head). Хелпер внутри
+    # fail-silent (при сбое пишет ERROR-лог и возвращает False), но семантика
+    # CLI-инициализатора — fail-loud: без схемы продолжать бессмысленно,
+    # поэтому печатаем ошибку и выходим с кодом 1. Шаг деплоя
+    # `docker exec kinobot python init_db.py` использует || true-семантику,
+    # поэтому пайплайну ненулевой код не вредит (логируется предупреждение).
+    print("🔄 Применение миграций БД (alembic upgrade head)...")
+    if not apply_database_migrations():
+        print("❌ Не удалось применить миграции БД — детали в ERROR-логе выше.")
+        print("   Проверьте DATABASE_URL, доступность БД и наличие файлов")
+        print("   (alembic.ini, migrations/), затем запустите инициализацию повторно.")
+        sys.exit(1)
+    # Хелпер возвращает True и при НАМЕРЕННОМ ПРОПУСКЕ миграций оператором
+    # (аварийный выключатель RUN_MIGRATIONS): печатать «миграции применены»
+    # в этом случае нельзя — схема БД не накатывалась. Различаем два случая
+    # публичным read-only флагом хелпера (его логика здесь не дублируется),
+    # значение флага показываем оператору как есть.
+    if migrations_disabled():
+        print(f"⚠️  Миграции пропущены (RUN_MIGRATIONS={os.getenv('RUN_MIGRATIONS', '')}) — схема БД НЕ изменялась")
+    else:
+        print("✅ Схема БД актуальна (миграции применены)")
 
+    with app.app_context():
         # Создание роли администратора
         admin_role = Role.query.filter_by(name='admin').first()
         if not admin_role:

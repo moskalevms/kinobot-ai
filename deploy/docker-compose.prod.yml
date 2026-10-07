@@ -22,6 +22,14 @@ services:
       timeout: 5s
       retries: 5
 
+  # Telegram-бот: ЕДИНСТВЕННЫЙ раннер миграций БД при старте контейнеров
+  # (бэклог T12) — `src/db_migrations.apply_database_migrations()` выполняет
+  # `alembic upgrade head` (fail-silent) до сборки приложения PTB.
+  # `kinobot-web` миграции и create_all НЕ запускает: один раннер исключает
+  # гонку DDL между контейнерами. Аварийный выключатель — `RUN_MIGRATIONS=false`
+  # в `.env.production` (env_file бота); в этом файле флаг намеренно не задан
+  # (дефолт — бот мигрирует). Контрольный прогон в деплое — шаг
+  # `docker exec kinobot alembic upgrade head` в .github/workflows/deploy.yml.
   kinobot:
     image: kinobot-ai:${APP_VERSION}
     container_name: kinobot

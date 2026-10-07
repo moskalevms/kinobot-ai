@@ -489,8 +489,9 @@ def test_similar_callback_uses_existing_pipeline(monkeypatch):
     text, text_kwargs = update.callback_query.message.texts[0]
     assert 'Похожий фильм' in text
     assert text_kwargs['parse_mode'] == 'HTML'
-    # Список похожих приходит с компактной клавиатурой A3
-    assert text_kwargs['reply_markup'].inline_keyboard[-1][0].callback_data == 'alt:list'
+    # Список похожих приходит с компактной клавиатурой A3; nav-ряд
+    # (alt:list) — предпоследний: последний ряд — выход в хаб «🏠 Меню» (C1)
+    assert text_kwargs['reply_markup'].inline_keyboard[-2][0].callback_data == 'alt:list'
 
 
 def test_similar_callback_without_movie_in_session_is_friendly(monkeypatch):
@@ -648,14 +649,15 @@ def test_info_callback_api_error_does_not_crash(monkeypatch):
 
 
 def test_routes_table_is_extensible():
-    """Таблица маршрутов покрывает все префиксы A3/A4/B1/B3/B7/B4/B5/B8."""
+    """Таблица маршрутов покрывает все префиксы A3/A4/B1/B3/B7/B4/B5/B8/T6."""
     prefixes = [prefix for prefix, _ in telegram_bot._CALLBACK_ROUTES]
 
-    # B8: меню переведено на inline-callback — добавлены `menu:`/`top:`
+    # B8: меню переведено на inline-callback — добавлены `menu:`/`top:`;
+    # T6: меню выбора жанра — добавлен `genre:` (в конец таблицы)
     assert prefixes == [
         'info:', 'alt:', 'similar:', 'back:', 'random:', 'mood:', 'retry:',
         'page:', 'save:', 'unsave:', 'watchlist:', 'wpage:', 'fb:',
-        'menu:', 'top:',
+        'menu:', 'top:', 'genre:',
     ]
     # Коллизии startswith исключены: ни один префикс не начинает другой
     for i, one in enumerate(prefixes):

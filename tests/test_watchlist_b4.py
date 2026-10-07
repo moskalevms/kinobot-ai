@@ -11,7 +11,9 @@
 - клавиатура карточки: кнопка «📌 Сохранить» (`save:{id}`);
 - `render_watchlist_page`: строки «N. <b>название</b> (год)» с html.escape,
   кнопки «🗑️ Удалить» (`unsave:{id}`), «⬇️ Ещё 5» (`wpage:{offset}`) только
-  при наличии продолжения, пустой список — заглушка с CTA (B7, без dead-end);
+  при наличии продолжения, пустой список — заглушка с CTA (B7, без dead-end),
+  заключительный ряд «🏠 Меню» (`menu:main`) в обеих ветвях — выход в хаб
+  (B1, изменение add-menu-hub-exit-buttons-b1b2);
 - callback-маршруты бота: save (успех/дубль/сбой хранилища/нет фильма в
   сессии/некорректный id), unsave (удаление + перерендер), watchlist:view,
   wpage (включая устаревший offset), retry:save;
@@ -50,6 +52,8 @@ from conftest import (
 )
 from dialogue_manager import (
     CARD_SAVE_BUTTON_TEXT,
+    MENU_BUTTON_TEXT,
+    MENU_MAIN_CALLBACK,
     RANDOM_MOVIE_CALLBACK,
     UNSAVE_CALLBACK_PREFIX,
     WATCHLIST_CALLBACK,
@@ -61,6 +65,7 @@ from dialogue_manager import (
     WATCHLIST_REMOVE_BUTTON_TEXT,
     build_movie_card_keyboard,
     render_watchlist_page,
+    truncate_button_text,
 )
 from models.database import Watchlist
 from watchlist_manager import WatchlistManager
@@ -190,11 +195,18 @@ def test_create_all_creates_watchlist_and_rejects_duplicates(sqlite_app):
         assert db.session.query(Watchlist).filter_by(user_id='u1', kinopoisk_id=1).count() == 1
 
 
-def test_init_db_has_no_raw_sql_and_mentions_watchlist():
-    """init_db.py: схема НЕ дублируется сырым SQL, таблица создаётся create_all."""
+def test_init_db_runs_migrations_and_mentions_watchlist():
+    """init_db.py: тонкая обёртка T14 — схема накатывается миграциями, не дублируется.
+
+    Единственный источник DDL — migrations/ (alembic upgrade head через хелпер
+    apply_database_migrations): в файле нет ни сырых DDL, ни create_all.
+    """
     text = (ROOT / 'init_db.py').read_text(encoding='utf-8')
-    assert 'CREATE TABLE' not in text.upper()
-    assert 'db.create_all()' in text
+    upper = text.upper()
+    assert 'CREATE TABLE' not in upper
+    assert 'ALTER' not in upper
+    assert 'db.create_all()' not in text
+    assert 'apply_database_migrations' in text
     assert 'watchlist' in text.lower()
 
 
@@ -374,7 +386,8 @@ def test_render_empty_watchlist_has_cta():
 
     assert text == WATCHLIST_EMPTY_TEXT
     buttons = _all_buttons(markup)
-    assert [b.callback_data for b in buttons] == [RANDOM_MOVIE_CALLBACK]
+    # CTA остаётся ПЕРВЫМ рядом, выход в хаб «🏠 Меню» — заключительный (B1)
+    assert [b.callback_data for b in buttons] == [RANDOM_MOVIE_CALLBACK, MENU_MAIN_CALLBACK]
 
 
 def test_render_items_rows_and_remove_buttons():
@@ -384,9 +397,11 @@ def test_render_items_rows_and_remove_buttons():
     assert '1. <b>Фильм 1</b> (2001)' in text
     assert '3. <b>Фильм 3</b> (2003)' in text
     buttons = _all_buttons(markup)
-    assert [b.text for b in buttons] == [WATCHLIST_REMOVE_BUTTON_TEXT] * 3
+    # Три ряда удаления + заключительный ряд выхода в хаб «🏠 Меню» (B1)
+    assert [b.text for b in buttons] == [WATCHLIST_REMOVE_BUTTON_TEXT] * 3 + [MENU_BUTTON_TEXT]
     assert [b.callback_data for b in buttons] == [
         f'{UNSAVE_CALLBACK_PREFIX}1', f'{UNSAVE_CALLBACK_PREFIX}2', f'{UNSAVE_CALLBACK_PREFIX}3',
+        MENU_MAIN_CALLBACK,
     ]
     # total == количество элементов — кнопки «⬇️ Ещё 5» нет
     assert WATCHLIST_MORE_BUTTON_TEXT not in text
@@ -395,9 +410,11 @@ def test_render_items_rows_and_remove_buttons():
 
 def test_render_more_button_only_when_has_more():
     _, markup = render_watchlist_page(_items(5), 0, 12)
-    last_row = markup.inline_keyboard[-1]
-    assert [b.text for b in last_row] == [WATCHLIST_MORE_BUTTON_TEXT]
-    assert last_row[0].callback_data == f'{WATCHLIST_PAGE_PREFIX}{WATCHLIST_PAGE_LIMIT}'
+    # Ряд «⬇️ Ещё 5» идёт ПЕРЕД заключительным рядом выхода в хаб (B1)
+    more_row = markup.inline_keyboard[-2]
+    assert [b.text for b in more_row] == [WATCHLIST_MORE_BUTTON_TEXT]
+    assert more_row[0].callback_data == f'{WATCHLIST_PAGE_PREFIX}{WATCHLIST_PAGE_LIMIT}'
+    assert markup.inline_keyboard[-1][0].callback_data == MENU_MAIN_CALLBACK
 
     # Последняя страница (total == offset + len(items)) — кнопки нет
     _, markup_last = render_watchlist_page(_items(2, start=6), 5, 7)
@@ -412,7 +429,41 @@ def test_render_continues_numbering_from_offset():
 
     assert '6. <b>Фильм 6</b>' in text
     assert '10. <b>Фильм 10</b>' in text
-    assert markup.inline_keyboard[-1][0].callback_data == 'wpage:10'
+    # «⬇️ Ещё 5» — предпоследний ряд, последний занят выходом в хаб (B1)
+    assert markup.inline_keyboard[-2][0].callback_data == 'wpage:10'
+    assert markup.inline_keyboard[-1][0].callback_data == MENU_MAIN_CALLBACK
+
+
+def test_render_menu_exit_row_is_last_in_both_branches():
+    """B1: «🏠 Меню» (`menu:main`) — заключительный ряд ОБЕИХ ветвей рендера.
+
+    Проверяются три формы страницы: с продолжением («⬇️ Ещё 5»), последняя
+    страница и пустое состояние. Ряд — из одной кнопки (раскладка T3 «ряд на
+    кнопку»), подпись и `callback_data` в лимитах Bot API, дублей выхода нет.
+    """
+    _, markup_more = render_watchlist_page(_items(5), 0, 12)
+    _, markup_last = render_watchlist_page(_items(2, start=6), 5, 7)
+    _, markup_empty = render_watchlist_page([], 0, 0)
+
+    for markup in (markup_more, markup_last, markup_empty):
+        last_row = markup.inline_keyboard[-1]
+        assert len(last_row) == 1, 'выход в хаб — отдельный ряд из одной кнопки'
+        button = last_row[0]
+        assert button.callback_data == MENU_MAIN_CALLBACK == 'menu:main'
+        assert button.text.startswith('🏠')
+        # Подпись прогнана через truncate_button_text (идемпотентность)
+        assert button.text == truncate_button_text(MENU_BUTTON_TEXT)
+        assert len(button.text) <= 64
+        assert len(button.callback_data.encode('utf-8')) <= 64
+        assert sum(1 for b in _all_buttons(markup) if b.callback_data == MENU_MAIN_CALLBACK) == 1
+
+
+def test_menu_main_callback_matches_bot_route():
+    """Константа B1 совпадает с маршрутом диспетчера бота (нового префикса нет)."""
+    assert MENU_MAIN_CALLBACK == f'{telegram_bot._MENU_PREFIX}main'
+    # Импортируется ботом из dialogue_manager (общий источник подписи, B2)
+    assert telegram_bot.MENU_MAIN_CALLBACK == MENU_MAIN_CALLBACK
+    assert telegram_bot.MENU_BUTTON_TEXT == MENU_BUTTON_TEXT
 
 
 def test_render_escapes_html_and_skips_missing_year():
@@ -571,7 +622,10 @@ def test_watchlist_view_callback_shows_first_page(monkeypatch):
     assert fake.list_calls == [('777', 0, WATCHLIST_PAGE_LIMIT)]
     message.edit_text.assert_awaited_once()
     markup = message.edit_text.await_args.kwargs['reply_markup']
-    assert [b.callback_data for b in _all_buttons(markup)] == ['unsave:1', 'unsave:2', 'unsave:3']
+    # Кнопки удаления + заключительный ряд выхода в хаб «🏠 Меню» (B1)
+    assert [b.callback_data for b in _all_buttons(markup)] == [
+        'unsave:1', 'unsave:2', 'unsave:3', MENU_MAIN_CALLBACK,
+    ]
 
 
 def test_watchlist_view_empty_list_shows_stub(monkeypatch):

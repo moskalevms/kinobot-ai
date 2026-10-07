@@ -71,9 +71,10 @@ class RtScore(db.Model):
     и server_default=func.now() остаются защитой для вставок в обход ORM
     (ручной SQL, админ-скрипты), чтобы колонка NOT NULL не осталась пустой.
 
-    Единственный источник схемы: init_db.py импортирует модели из этого
-    модуля и создаёт таблицу rt_scores вызовом db.create_all() —
-    дублирования определений нет (см. openspec change add-rt-cache).
+    Единственный источник схемы: migrations/ (alembic upgrade head; init_db.py
+    и старт бота накатывают миграции через db_migrations), эта модель —
+    источник правды для autogenerate; дублирования определений нет
+    (см. openspec change add-rt-cache).
     """
     __tablename__ = 'rt_scores'
 
@@ -106,9 +107,10 @@ class Watchlist(db.Model):
     для вставок в обход ORM, чтобы колонка NOT NULL не осталась пустой
     (образец — RtScore.fetched_at).
 
-    Единственный источник схемы: init_db.py импортирует модели из этого
-    модуля и создаёт таблицу watchlist вызовом db.create_all() —
-    дублирования определений нет (см. openspec change add-watchlist).
+    Единственный источник схемы: migrations/ (alembic upgrade head; init_db.py
+    и старт бота накатывают миграции через db_migrations), эта модель —
+    источник правды для autogenerate; дублирования определений нет
+    (см. openspec change add-watchlist).
     """
     __tablename__ = 'watchlist'
 
@@ -155,9 +157,10 @@ class MovieFeedback(db.Model):
     фидбека для будущей персонализации (задача C5; ранжирование в B5
     не меняется).
 
-    Единственный источник схемы: init_db.py импортирует модели из этого
-    модуля и создаёт таблицу movie_feedback вызовом db.create_all() —
-    дублирования определений нет (см. openspec change add-movie-feedback).
+    Единственный источник схемы: migrations/ (alembic upgrade head; init_db.py
+    и старт бота накатывают миграции через db_migrations), эта модель —
+    источник правды для autogenerate; дублирования определений нет
+    (см. openspec change add-movie-feedback).
     """
     __tablename__ = 'movie_feedback'
 
@@ -212,10 +215,10 @@ class OfftopicRefusal(db.Model):
     защита для вставок в обход ORM (образец — RtScore.fetched_at).
     Индекс по created_at — фильтру периода в агрегации топ-N отказов.
 
-    Единственный источник схемы: init_db.py импортирует модели из этого
-    модуля и создаёт таблицу offtopic_refusals вызовом db.create_all() —
-    дублирования определений нет (см. openspec change
-    add-offtopic-metrics-b7).
+    Единственный источник схемы: migrations/ (alembic upgrade head; init_db.py
+    и старт бота накатывают миграции через db_migrations), эта модель —
+    источник правды для autogenerate; дублирования определений нет
+    (см. openspec change add-offtopic-metrics-b7).
     """
     __tablename__ = 'offtopic_refusals'
 

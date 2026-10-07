@@ -77,7 +77,7 @@ def test_start_shows_single_visible_message():
 
 
 def test_start_keyboard_has_instant_actions_and_watchlist():
-    """Inline-кнопки (B1+B3): мгновенная ценность (ряд 1) и «📌 Мой список» (ряд 2)."""
+    """Inline-кнопки (B1+B3, раскладка T3): три ряда, в каждом — одна кнопка."""
     update = _StartUpdate()
 
     _run(telegram_bot.start(update, None))
@@ -91,13 +91,40 @@ def test_start_keyboard_has_instant_actions_and_watchlist():
         (telegram_bot.MOOD_BUTTON_TEXT, telegram_bot.MOOD_START_CALLBACK),
         (telegram_bot.WATCHLIST_MENU_BUTTON_TEXT, f'{telegram_bot._MENU_PREFIX}watchlist'),
     ]
-    # B3: вторая строка — одна кнопка быстрого доступа к списку
-    assert len(markup.inline_keyboard) == 2
-    assert len(markup.inline_keyboard[1]) == 1
+    # T3 (баг-репорт 04.10.2026): три ряда по ОДНОЙ кнопке на всю ширину —
+    # ряда из двух длинных подписей больше нет; B3 «📌 Мой список» — ряд [2].
+    assert len(markup.inline_keyboard) == 3
+    assert all(len(row) == 1 for row in markup.inline_keyboard)
+    # Подпись настроения — в две строки: `\n` в inline-клавиатуре
+    # автоматически увеличивает высоту кнопки (требование баг-репорта).
+    assert '\n' in telegram_bot.MOOD_BUTTON_TEXT
+    mood_button = markup.inline_keyboard[1][0]
+    assert mood_button.callback_data == telegram_bot.MOOD_START_CALLBACK
+    assert '\n' in mood_button.text
     for button in buttons:
         # Лимиты Bot API: подпись ≤64 символа, callback_data ≤64 байта
         assert len(button.text) <= 64
         assert len(button.callback_data.encode('utf-8')) <= 64
+
+
+def test_onboarding_keyboard_has_no_row_with_two_long_labels():
+    """Инвариант T3 (критерий приёмки): нет ряда из ≥2 кнопок суммарно >40 симв.
+
+    Защита от регресса старой раскладки: две длинные подписи в одном ряду
+    Telegram делит по ширине пополам и обрезает многоточием (баг-репорт
+    04.10.2026 — «🎭 Подобрать по настроению» не влезала целиком). Порог
+    40 символов — консервативная граница ширины, а не лимит Bot API 64.
+    Общий guard по всем билдерам клавиатур — отдельная задача T7.
+    """
+    markup = telegram_bot.build_onboarding_keyboard()
+
+    for row in markup.inline_keyboard:
+        if len(row) >= 2:
+            total = sum(len(button.text) for button in row)
+            assert total <= 40, (
+                f'Ряд из {len(row)} кнопок с суммарной длиной подписей {total} > 40: '
+                f'{[button.text for button in row]}'
+            )
 
 
 def test_start_does_not_attach_reply_menu():

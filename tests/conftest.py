@@ -312,8 +312,13 @@ def all_buttons(keyboard: InlineKeyboardMarkup) -> List[Any]:
 
 
 def number_buttons(keyboard: InlineKeyboardMarkup) -> List[Any]:
-    """Номерные кнопки клавиатуры списка (все ряды до навигационного)."""
-    return [b for row in keyboard.inline_keyboard[:-1] for b in row]
+    """Номерные кнопки клавиатуры СПИСКА выдачи.
+
+    Исключает два последних ряда списка: ряд навигации («🔄 Другие |
+    ⬇️ Ещё 5 | 🎲 Случайный», B2) и заключительный ряд выхода в хаб
+    «🏠 Меню» (`menu:main`, C1).
+    """
+    return [b for row in keyboard.inline_keyboard[:-2] for b in row]
 
 
 class TagBalanceChecker(HTMLParser):

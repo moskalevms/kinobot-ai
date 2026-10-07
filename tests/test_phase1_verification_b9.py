@@ -19,9 +19,10 @@ test_error_recovery_b7, test_menu_callbacks_b8). Gap-анализ чек-лис�
    с кнопками (B7, без dead-end);
 4. онбординг-кнопка `random:movie`: состав клавиатуры `/start` и привязка
    префикса `random:` к обработчику случайного фильма;
-5. единственный источник схем новых таблиц (watchlist, movie_feedback):
-   `init_db.py` не дублирует определения (ловушка AGENTS.md — «схемы
-   идентичны в database.py и init_db.py» обеспечивается импортом моделей);
+ 5. единственный источник схем новых таблиц (watchlist, movie_feedback):
+    `init_db.py` не дублирует определения и накатывает схему миграциями
+    (тонкая обёртка T14: единственный источник DDL — migrations/, ловушка
+    AGENTS.md «схемы идентичны» обеспечивается конструкцией);
 6. ошибки: представитель каждого класса (network/llm/generic) → СВОЙ текст
    и ≥1 кнопка-действие (приёмочная сводка поверх точечного покрытия B7);
 7. nit n5 (handoff B8): десятилетие примера в справке `/help` вычисляется
@@ -91,7 +92,7 @@ def test_pagination_second_page_and_last_page():
     assert lines2[1].startswith('6.')
     assert lines2[5].startswith('10.')
     assert LIST_END_TEXT not in page2
-    more2 = [b for b in kb2.inline_keyboard[-1] if (b.callback_data or '').startswith(PAGE_CALLBACK_PREFIX)]
+    more2 = [b for b in kb2.inline_keyboard[-2] if (b.callback_data or '').startswith(PAGE_CALLBACK_PREFIX)]
     assert len(more2) == 1
     assert more2[0].callback_data == f'{PAGE_CALLBACK_PREFIX}10:{compute_list_hash(movies)}'
 
@@ -101,7 +102,7 @@ def test_pagination_second_page_and_last_page():
     assert lines_last[1].startswith('11.')
     assert lines_last[2].startswith('12.')
     assert lines_last[-1] == LIST_END_TEXT
-    more_last = [b for b in kb_last.inline_keyboard[-1] if (b.callback_data or '').startswith(PAGE_CALLBACK_PREFIX)]
+    more_last = [b for b in kb_last.inline_keyboard[-2] if (b.callback_data or '').startswith(PAGE_CALLBACK_PREFIX)]
     assert more_last == []
 
 
@@ -275,12 +276,14 @@ def test_error_class_texts_are_pairwise_distinct():
 
 # Контракт таблицы маршрутов: ВСЕ префиксы фазы 0+1 в фиксированном порядке
 # (порядок важен: первое совпадение `startswith` выигрывает). Литералы, для
-# которых нет публичных констант, — из исходника telegram_bot.py.
+# которых нет публичных констант, — из исходника telegram_bot.py. Контракт
+# пополняется префиксами последующих задач: T6 добавил маршрут меню жанров.
 _PHASE1_ROUTE_PREFIXES: Tuple[str, ...] = (
     'info:', 'alt:', 'similar:', 'back:', 'random:', 'mood:', 'retry:',
     PAGE_CALLBACK_PREFIX, SAVE_CALLBACK_PREFIX, UNSAVE_CALLBACK_PREFIX,
     'watchlist:', WATCHLIST_PAGE_PREFIX, FEEDBACK_CALLBACK_PREFIX,
     telegram_bot._MENU_PREFIX, telegram_bot._TOP_PREFIX,
+    telegram_bot._GENRE_PREFIX,
 )
 
 # Образец callback_data на каждый префикс (реальные формы из B1–B8)
@@ -300,6 +303,8 @@ _PREFIX_SAMPLES: Dict[str, str] = {
     FEEDBACK_CALLBACK_PREFIX: f'{FEEDBACK_CALLBACK_PREFIX}watched:435',
     telegram_bot._MENU_PREFIX: f'{telegram_bot._MENU_PREFIX}top',
     telegram_bot._TOP_PREFIX: f'{telegram_bot._TOP_PREFIX}50:movies',
+    # T6: меню выбора жанра (образец — реальный callback кнопки жанра)
+    telegram_bot._GENRE_PREFIX: f'{telegram_bot._GENRE_PICK_PREFIX}комедия',
 }
 
 
@@ -377,22 +382,27 @@ def test_onboarding_random_movie_button_is_wired_to_route():
     assert routes[telegram_bot._MENU_PREFIX] is telegram_bot._handle_menu_callback
 
 
-# === 7. Единственный источник схем новых таблиц (database.py ↔ init_db.py) ===
+# === 7. Единственный источник схем новых таблиц (database.py ↔ migrations/ ↔ init_db.py) ===
 
 
 def test_new_tables_have_single_schema_source():
     """Схемы watchlist/movie_feedback определены РОВНО один раз — в моделях.
 
-    Приёмка B9 «схемы новых таблиц идентичны в src/models/database.py и
-    init_db.py» обеспечивается конструкцией: init_db.py импортирует модели и
-    вызывает db.create_all(), не дублируя определения (ни сырого CREATE TABLE,
-    ни повторных db.Column). Состав колонок — контракт моделей фазы 1.
+    Приёмка B9 «схемы новых таблиц идентичны» обеспечивается конструкцией:
+    init_db.py — тонкая обёртка T14 (импортирует модели и накатывает схему
+    миграциями через apply_database_migrations, единственный источник DDL —
+    migrations/), определения НЕ дублируются — ни сырым CREATE TABLE/ALTER,
+    ни повторными db.Column, ни вызовом db.create_all(). Состав колонок —
+    контракт моделей фазы 1; согласованность моделей и миграций — guard T13.
     """
     text = (ROOT / 'init_db.py').read_text(encoding='utf-8')
-    assert 'CREATE TABLE' not in text.upper()
+    upper = text.upper()
+    assert 'CREATE TABLE' not in upper
+    assert 'ALTER' not in upper
     assert 'db.Column' not in text
+    assert 'db.create_all()' not in text
     assert 'from models.database import' in text
-    assert 'db.create_all()' in text
+    assert 'apply_database_migrations' in text
 
     tables = db_module.db.metadata.tables
     assert {'watchlist', 'movie_feedback'} <= set(tables)

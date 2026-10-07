@@ -178,6 +178,19 @@ WATCHLIST_HEADER = '📌 Мой список:'
 # действие «🎲 Случайный фильм» существующего маршрута random:movie).
 WATCHLIST_EMPTY_TEXT = '📌 Список пуст — добавьте фильмы кнопкой «📌 Сохранить» в карточках.'
 
+# --- Выход в хаб: общая кнопка «🏠 Меню» (B1, add-menu-hub-exit-buttons-b1b2) ---
+# Навигация бота — hub-and-spoke, центр — главное меню. Маршрут `menu:main`
+# УЖЕ поддержан диспетчером бота (префикс `_MENU_PREFIX` в `_CALLBACK_ROUTES`
+# и ветка 'main' в `_handle_menu_callback`), поэтому НОВАЯ callback-сущность не
+# вводится: константы задают единую подпись и цель для кнопок выхода в хаб —
+# страницы «📌 Мой список» (здесь, B1) и непустая сводка `/stats`
+# (telegram_bot.py, B2, импорт этих имён). Эмодзи 🏠 закреплён гайдлайном за
+# единственным смыслом «выход в главное меню» (docs/emoji_guideline.md,
+# «Служебные символы»); ⬅️ остаётся контекстным возвратом. Подпись проходит
+# truncate_button_text (≤64 символа), `callback_data` — 9 байт (≤64).
+MENU_BUTTON_TEXT = '🏠 Меню'
+MENU_MAIN_CALLBACK = 'menu:main'
+
 # --- Обратная связь нейтральными эмодзи (фаза 3, B5, add-movie-feedback) ---
 # Ряд фидбека карточки: «⭐ Оценить» открывает панель оценки 1–10,
 # «✅ Смотрел» и «❌ Не моё» — мгновенные реакции. Нейтральные эмодзи
@@ -238,6 +251,78 @@ MOOD_ANSWER_MAX_WORDS = 5
 # ТОЧНОГО совпадения со словарём, поэтому порог уже — 3 слова. Всё, что
 # длиннее или не совпало точно («устал от жизни»), уходит в LLM-пайплайн.
 MOOD_PREFILTER_MAX_WORDS = 3
+
+# --- Единый источник подписей настроений/жанров (T10, add-single-source-mood-genre-constants-t10) ---
+# Данные кнопок подбора живут ЗДЕСЬ, рядом по смыслу с источниками ключей
+# (`mood_to_genre`/`mood_triggers` — инстанс-атрибуты `DialogueManager`
+# ниже в классе; вставить константы буквально внутрь класса нельзя без
+# переноса самих словарей, что вне scope T10 — design.md D2). Имена
+# ПУБЛИЧНЫЕ (без `_`): это контракт между модулями — `telegram_bot.py`
+# импортирует их и НЕ объявляет собственных списков-дублей (инвариант
+# зафиксирован AST-guard'ом tests/test_single_source_mood_genre_t10.py).
+
+# Подписи кнопок настроения: ключ словаря `mood_triggers` → текст кнопки
+# (перенос `_MOOD_BUTTON_TEXT_BY_KEY` из telegram_bot.py, T5/баг 3a,
+# add-mood-genre-inline-keyboards-t5t6). ВНИМАНИЕ: это НЕ второй источник
+# состава кнопок (риск T5 в бэклоге) — `build_mood_keyboard()` выводит
+# кнопки и их ПОРЯДОК обходом `mood_triggers`, словарь лишь переводит
+# основу ключа («грустн») в человекочитаемую подпись («😔 Грустное»).
+# Инвариант «ключи подписей == ключи `mood_triggers` == ключи
+# `mood_to_genre`» зафиксирован тестами
+# tests/test_single_source_mood_genre_t10.py (design.md D1, образец —
+# инвариант словарей B4 в tests/test_mood_audit_b4.py) и
+# tests/test_mood_keyboard_t5.py.
+# Эмодзи — только закреплённые гайдлайном (docs/emoji_guideline.md,
+# категория «Добавить», T5): единственный смысл каждого — «кнопка выбора
+# настроения», других значений не добавлять (чек-лист B6: сначала
+# гайдлайн, потом код). Guard «mood-эмодзи только внутри этого словаря» —
+# tests/test_emoji_guideline.py (скан блока MOOD_BUTTON_LABELS).
+MOOD_BUTTON_LABELS: Dict[str, str] = {
+    'грустн': '😔 Грустное',
+    'весел': '😄 Весёлое',
+    'устал': '😌 Устал',
+    'скучно': '🥱 Скучно',
+    'страшн': '😨 Страшное',
+    'романт': '💕 Романтическое',
+    'адреналин': '💥 Адреналин',
+    'умный': '🧠 Умное',
+}
+
+# Имена жанров на кнопках (перенос `_GENRE_MENU_NAMES` из telegram_bot.py,
+# T6/баг 3b). Это НЕ независимый второй список (риск T5/T6 в бэклоге):
+# каждое имя ОБЯЗАНО входить в множество значений `mood_to_genre` —
+# источника жанров бота, инвариант зафиксирован тестами
+# tests/test_genre_keyboard_t6.py и tests/test_single_source_mood_genre_t10.py.
+# Взят ПОДНАБОР (12 имён из 19 уникальных значений), а не все значения, потому что:
+# 1) бэклог T6 задаёт «~10-14 кнопок» — длиннее не нужно (inline-скролл
+#    допустим, но 19 кнопок ухудшают выбор);
+# 2) «мюзикл» входит в `movie_filter.EXCLUDED_GENRES` — кнопка давала бы
+#    пустую/урезанную выдачу (лишний риск без пользы);
+# 3) «психологический триллер»/«психологический» детерминированный
+#    fallback-классификатор (`intent_classifier._classify_fallback`, словарь
+#    `genre_mapping`) сводит к «триллер» — дубль кнопок по смыслу;
+# 4) порядок стабилен и согласован с `_GENRE_PROMPT_TEXT` (примеры жанров,
+#    telegram_bot.py) и бэклогом: частые жанры выше, нишевые («военный»,
+#    «исторический», «мистика», «романтическая комедия») оставлены ручному вводу.
+# Год в запросах жанра НЕ используется (ловушка AGENTS.md: четвёртый хардкод
+# `CURRENT_YEAR` запрещён, риск 6 бэклога).
+GENRE_MENU_NAMES: tuple[str, ...] = (
+    'комедия', 'драма', 'боевик', 'триллер', 'ужасы', 'фантастика',
+    'мелодрама', 'приключения', 'детектив', 'фэнтези', 'мультфильм', 'семейный',
+)
+# Шаблон запроса в LLM-пайплайн — ЕДИНСТВЕННЫЙ источник формулировки (образец
+# `_TOP_QUERY_BY_SEGMENT` в telegram_bot.py): словарь запросов ВЫВОДИТСЯ из
+# шаблона и имён жанров, второй источник формулировки запрещён (риск 5 бэклога
+# — формулировка обязана уверенно классифицироваться существующими промптами
+# `src/prompts/*.txt`, которые в рамках T6/T10 не меняются). Проверка
+# классификации — детерминированный тест `intent_classifier._classify_fallback`
+# в tests/test_genre_keyboard_t6.py (без сети и без правки промптов);
+# выводимость каждого запроса из шаблона — инвариант
+# tests/test_single_source_mood_genre_t10.py.
+GENRE_QUERY_TEMPLATE = 'посоветуй лучшие фильмы в жанре {genre}'
+GENRE_QUERIES: Dict[str, str] = {
+    name: GENRE_QUERY_TEMPLATE.format(genre=name) for name in GENRE_MENU_NAMES
+}
 
 # Символы, снимаемые при нормализации для mood-префильтра: любая пунктуация
 # и прочий не-текст (regex `[^\w\s]`, `\w` unicode-ный — кириллица входит).
@@ -759,14 +844,26 @@ def render_watchlist_page(
     с кнопкой «⬇️ Ещё 5» (callback `wpage:{offset+limit}`), на последней
     странице её нет. Пустой список — дружелюбная заглушка с мгновенным
     действием «🎲 Случайный фильм» (существующий маршрут random:movie) —
-    без dead-end (B7). Все подписи проходят truncate_button_text, все
-    `callback_data` короткие (≤64 байт).
+    без dead-end (B7). Обе ветви завершаются рядом «🏠 Меню» (callback
+    `menu:main`, B1): выход в хаб — ВСЕГДА последний ряд клавиатуры, на
+    любой странице списка и в пустом состоянии (новый маршрут не
+    добавляется — `menu:main` уже поддержан диспетчером бота). Все подписи
+    проходят truncate_button_text, все `callback_data` короткие (≤64 байт).
     """
     if not items:
-        markup = InlineKeyboardMarkup([[InlineKeyboardButton(
-            truncate_button_text(WATCHLIST_RANDOM_BUTTON_TEXT),
-            callback_data=RANDOM_MOVIE_CALLBACK,
-        )]])
+        # CTA пустого состояния остаётся ПЕРВЫМ рядом (мгновенное действие
+        # важнее выхода в меню), «🏠 Меню» — заключительный ряд (B1: Home —
+        # последний ряд, docs/emoji_guideline.md / GramIO §13).
+        markup = InlineKeyboardMarkup([
+            [InlineKeyboardButton(
+                truncate_button_text(WATCHLIST_RANDOM_BUTTON_TEXT),
+                callback_data=RANDOM_MOVIE_CALLBACK,
+            )],
+            [InlineKeyboardButton(
+                truncate_button_text(MENU_BUTTON_TEXT),
+                callback_data=MENU_MAIN_CALLBACK,
+            )],
+        ])
         return WATCHLIST_EMPTY_TEXT, markup
 
     lines = [f'<strong>{html.escape(WATCHLIST_HEADER)}</strong>']
@@ -787,6 +884,13 @@ def render_watchlist_page(
             truncate_button_text(WATCHLIST_MORE_BUTTON_TEXT),
             callback_data=f'{WATCHLIST_PAGE_PREFIX}{offset + limit}',
         )])
+    # Заключительный ряд — выход в хаб (B1): «🏠 Меню» присутствует на КАЖДОЙ
+    # странице списка, включая последнюю (где ряда «⬇️ Ещё 5» нет), и всегда
+    # ПОСЛЕДНИЙ — правило «Home — последний ряд» (docs/emoji_guideline.md).
+    rows.append([InlineKeyboardButton(
+        truncate_button_text(MENU_BUTTON_TEXT),
+        callback_data=MENU_MAIN_CALLBACK,
+    )])
     response = '\n'.join(lines) + '\n'
     return response, InlineKeyboardMarkup(rows)
 
@@ -1495,12 +1599,15 @@ class DialogueManager:
         Под номерами — ряд навигации с контекстными quick replies (B2):
         «🔄 Другие» (alt:list), «⬇️ Ещё 5» (page:{offset+limit}:{hash} —
         только если в выдаче остались неотображённые фильмы) и
-        «🎲 Случайный» (random:movie). При исчерпании сохранённой выдачи
-        (offset > 0 и продолжения нет) кнопка «⬇️ Ещё 5» скрывается, а в
-        текст добавляется строка LIST_END_TEXT — БЕЗ нового запроса к
-        движку (design.md D4). Подписи кнопок не зависят от названия
-        фильма — ни «None», ни превышения лимита Telegram (nit №1 ревью A2
-        закрыт конструктивно).
+        «🎲 Случайный» (random:movie). Под рядом навигации — отдельный
+        заключительный ряд выхода в хаб «🏠 Меню» (`menu:main`, C1,
+        паттерн B1: Home — ВСЕГДА последний ряд клавиатуры; присутствует
+        в обеих ветках — и с «⬇️ Ещё 5», и на последней странице). При
+        исчерпании сохранённой выдачи (offset > 0 и продолжения нет)
+        кнопка «⬇️ Ещё 5» скрывается, а в текст добавляется строка
+        LIST_END_TEXT — БЕЗ нового запроса к движку (design.md D4).
+        Подписи кнопок не зависят от названия фильма — ни «None», ни
+        превышения лимита Telegram (nit №1 ревью A2 закрыт конструктивно).
         """
         total = len(movies)
         offset = clamp_page_offset(total, offset, limit)
@@ -1521,7 +1628,7 @@ class DialogueManager:
             # Последняя страница пагинации: явно сообщаем, что выдача
             # исчерпана (B3, критерий «это все подходящие»)
             lines.append(LIST_END_TEXT)
-        # Ряды номеров + отдельный ряд навигации под ними (B2)
+        # Ряды номеров + отдельный ряд навигации под ними (B2) + ряд выхода в хаб (C1)
         rows = [number_buttons[i:i + BUTTONS_PER_ROW] for i in range(0, len(number_buttons), BUTTONS_PER_ROW)]
         nav_row = [InlineKeyboardButton(
             truncate_button_text(LIST_NAV_BUTTON_TEXT),
@@ -1537,6 +1644,16 @@ class DialogueManager:
             callback_data=RANDOM_MOVIE_CALLBACK,
         ))
         rows.append(nav_row)
+        # C1: выход в хаб — ВСЕГДА отдельный заключительный ряд ПОД nav-рядом
+        # (B7 «без dead-end», паттерн B1 из render_watchlist_page: Home —
+        # последний ряд, GramIO §13). Новый маршрут/обработчик не вводятся:
+        # `menu:main` уже поддержан диспетчером бота (_handle_menu_callback),
+        # повторный тап гасится _edit_or_send. Текст списка (A2) не меняется —
+        # правка касается ТОЛЬКО клавиатуры.
+        rows.append([InlineKeyboardButton(
+            truncate_button_text(MENU_BUTTON_TEXT),
+            callback_data=MENU_MAIN_CALLBACK,
+        )])
         # Строки списка и заголовок разделяются переводом строки, завершающий
         # перевод строки сохранён — формат текста A2 не меняется
         response = "\n".join(lines) + "\n"

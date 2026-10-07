@@ -130,8 +130,9 @@ def test_number_label_fallback_for_index_above_ten():
 # --- 5.2 Раскладка клавиатуры списка ---
 
 
-def test_five_movies_give_two_number_rows_plus_nav_row():
-    """Критерий A3 «≤2 рядов»: 2 ряда НОМЕРОВ при 5 фильмах + ряд навигации."""
+def test_five_movies_give_two_number_rows_plus_nav_and_menu_rows():
+    """Критерий A3 «≤2 рядов номеров»: 2 ряда номеров при 5 фильмах + ряд
+    навигации + заключительный ряд выхода в хаб «🏠 Меню» (C1)."""
     dm = _manager()
     movies = [_movie(id=i, title=f'Фильм {i}') for i in range(1, 14)]
 
@@ -141,16 +142,17 @@ def test_five_movies_give_two_number_rows_plus_nav_row():
     # Формат текста A2 не изменился: заголовок + 5 строк фильмов
     assert len(response.splitlines()) == 6
     rows = keyboard.inline_keyboard
-    assert len(rows[: -1]) == 2
-    assert [len(row) for row in rows[: -1]] == [4, 1]
+    assert len(rows[: -2]) == 2
+    assert [len(row) for row in rows[: -2]] == [4, 1]
     # Ряд навигации — отдельный, под номерами (B2: три контекстных quick
-    # replies — другие варианты / следующая страница / случайный фильм)
-    assert [b.text for b in rows[-1]] == [
+    # replies — другие варианты / следующая страница / случайный фильм);
+    # последний ряд — выход в хаб «🏠 Меню» (C1), поэтому nav-ряд — [-2]
+    assert [b.text for b in rows[-2]] == [
         LIST_NAV_BUTTON_TEXT, LIST_MORE_BUTTON_TEXT, LIST_RANDOM_BUTTON_TEXT,
     ]
-    assert rows[-1][0].callback_data == LIST_NAV_CALLBACK
-    assert rows[-1][1].callback_data.startswith(PAGE_CALLBACK_PREFIX)
-    assert rows[-1][2].callback_data == RANDOM_MOVIE_CALLBACK
+    assert rows[-2][0].callback_data == LIST_NAV_CALLBACK
+    assert rows[-2][1].callback_data.startswith(PAGE_CALLBACK_PREFIX)
+    assert rows[-2][2].callback_data == RANDOM_MOVIE_CALLBACK
 
 
 def test_number_buttons_carry_ids_of_matching_movies():
@@ -199,7 +201,7 @@ def test_long_or_missing_title_does_not_break_keyboard():
 
 
 def test_few_movies_single_number_row():
-    """Лимит — верхняя граница: 2 фильма → один ряд номеров + навигация."""
+    """Лимит — верхняя граница: 2 фильма → ряд номеров + навигация + «🏠 Меню»."""
     dm = _manager()
     movies = [_movie(id=i, title=f'Фильм {i}') for i in range(1, 3)]
 
@@ -207,7 +209,7 @@ def test_few_movies_single_number_row():
 
     assert len(response.splitlines()) == 3
     assert len(keyboard.inline_keyboard[0]) == 2
-    assert len(keyboard.inline_keyboard) == 2
+    assert len(keyboard.inline_keyboard) == 3
 
 
 def test_badge_and_title_are_not_in_buttons():

@@ -8,6 +8,9 @@ Flask-Executor>=1.0.0
 tenacity>=8.2.0
 python-telegram-bot>=20.7
 SQLAlchemy==2.0.44
+# Миграции схемы БД (T11): пин по мажору, совместим с SQLAlchemy==2.0.44;
+# прод-зависимость (не requirements-dev) — нужна в образе для upgrade head (T12)
+alembic>=1.13,<2
 Flask-SQLAlchemy==3.0.5
 Flask-Login==0.6.3
 psycopg2-binary==2.9.9

@@ -117,7 +117,8 @@ def test_more_button_renders_next_page_from_session(monkeypatch):
     assert [b.text for b in numbers] == ['6️⃣', '7️⃣', '8️⃣', '9️⃣', '🔟']
     assert [b.callback_data for b in numbers] == [f'info:{i}' for i in range(6, 11)]
     # Ряд навигации: следующая страница 10, те же «🔄 Другие» и «🎲 Случайный»
-    nav = keyboard.inline_keyboard[-1]
+    # (nav-ряд — предпоследний: последний ряд — выход в хаб «🏠 Меню», C1)
+    nav = keyboard.inline_keyboard[-2]
     assert nav[1].text == LIST_MORE_BUTTON_TEXT
     assert nav[1].callback_data == _page_callback(movies, 10)
     # Редактирование, а не новое сообщение (A5); движок не вызывался
@@ -179,7 +180,7 @@ def test_last_page_hides_more_button_and_shows_end_text(monkeypatch):
         (b.callback_data or '').startswith(PAGE_CALLBACK_PREFIX)
         for b in _all_buttons(keyboard)
     )
-    assert [b.text for b in keyboard.inline_keyboard[-1]] == ['🔄 Другие', '🎲 Случайный']
+    assert [b.text for b in keyboard.inline_keyboard[-2]] == ['🔄 Другие', '🎲 Случайный']
     # Исчерпание НЕ делает новый запрос к движку (design.md D4)
     dm.movie_agent.recommend_movies.assert_not_awaited()
 
@@ -239,7 +240,8 @@ def test_out_of_range_offset_falls_back_to_first_page(monkeypatch):
         assert text.startswith(f'<strong>{telegram_bot.BACK_TO_LIST_HEADER}</strong>')
         assert not text.startswith(f'<strong>{telegram_bot.PAGE_CONTINUATION_HEADER}</strong>')
         # Кнопка «⬇️ Ещё 5» первой страницы ведёт на offset 5, а не на 100/-5
-        assert keyboard.inline_keyboard[-1][1].callback_data == _page_callback(movies, 5)
+        # (nav-ряд — предпоследний: последний ряд — «🏠 Меню», C1)
+        assert keyboard.inline_keyboard[-2][1].callback_data == _page_callback(movies, 5)
 
 
 # --- 3. Идемпотентность повторного тапа ---

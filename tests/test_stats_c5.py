@@ -8,10 +8,11 @@
   при недоступности БД (available=False, без исключений, warning однократно),
   ленивый синглтон `get_stats_manager`;
 - рендер `build_stats_response`: полная сводка (HTML, числа экранированы,
-  теги сбалансированы), частичные данные (нулевые строки опускаются
-  целиком), пустые данные — дружелюбная заглушка с CTA-клавиатурой (B7,
-  без ⚠️), эмодзи-соответствие гайдлайну B6 (📊 закреплён в
-  docs/emoji_guideline.md этим изменением);
+  теги сбалансированы) с клавиатурой выхода в хаб «🏠 Меню» (`menu:main`,
+  B2, изменение add-menu-hub-exit-buttons-b1b2), частичные данные (нулевые
+  строки опускаются целиком), пустые данные — дружелюбная заглушка с
+  ПРЕЖНЕЙ CTA-клавиатурой (B7, без ⚠️), эмодзи-соответствие гайдлайну B6
+  (📊 закреплён в docs/emoji_guideline.md этим изменением);
 - хендлер `handle_stats_command`: команда /stats отвечает HTML-сводкой,
   пусто — заглушка с ≥1 действием, сбой хранилища — ЧЕСТНАЯ generic-ошибка
   с `retry:menu:stats` (не обманчивые нули), сбой доставки — ошибка с
@@ -226,10 +227,14 @@ def test_session_prefix_matches_tracker_contract():
 
 
 def test_build_stats_response_full_summary():
-    """Полная сводка: заголовок, все пять строк, средняя с одним знаком, без клавиатуры."""
+    """Полная сводка: заголовок, все пять строк, средняя с одним знаком + «🏠 Меню» (B2)."""
     text, markup = telegram_bot.build_stats_response(FULL_STATS)
 
-    assert markup is None
+    # B2: сводка больше не dead-end — один ряд с кнопкой выхода в хаб
+    assert markup is not None
+    assert len(markup.inline_keyboard) == 1
+    assert [b.text for b in markup.inline_keyboard[0]] == [telegram_bot.MENU_BUTTON_TEXT]
+    assert markup.inline_keyboard[0][0].callback_data == 'menu:main'
     assert f'<strong>{telegram_bot.STATS_HEADER}</strong>' in text
     assert 'Запросов к боту: <b>12</b>' in text
     assert 'Оценок фильмов: <b>5</b> (средняя — <b>8.2</b>)' in text  # 8.23 → 8.2
@@ -237,6 +242,23 @@ def test_build_stats_response_full_summary():
     assert 'Отметок «Не моё»: <b>2</b>' in text
     assert 'Фильмов в «Мой список»: <b>4</b>' in text
     assert_html_balanced(text)
+
+
+def test_build_stats_response_menu_exit_keyboard_respects_limits():
+    """Клавиатура выхода в хаб (B2): одна кнопка, подпись и `callback_data` в лимитах Bot API."""
+    _, markup = telegram_bot.build_stats_response(FULL_STATS)
+
+    assert markup is not None
+    buttons = all_buttons(markup)
+    assert len(buttons) == 1
+    button = buttons[0]
+    assert button.text.startswith('🏠')
+    assert button.text == telegram_bot.truncate_button_text(telegram_bot.MENU_BUTTON_TEXT)
+    assert len(button.text) <= 64
+    assert button.callback_data == telegram_bot.MENU_MAIN_CALLBACK
+    assert len(button.callback_data.encode('utf-8')) <= 64
+    # Общий источник констант с watchlist (B1): импорт из dialogue_manager
+    assert telegram_bot.MENU_MAIN_CALLBACK == f'{telegram_bot._MENU_PREFIX}main'
 
 
 def test_build_stats_response_omits_zero_lines():
@@ -248,7 +270,8 @@ def test_build_stats_response_omits_zero_lines():
     assert 'Оценок' not in text
     assert 'Отметок' not in text
     assert '«Мой список»' not in text
-    assert markup is None
+    # Любая непустая сводка идёт с выходом в хаб (B2)
+    assert [b.callback_data for b in all_buttons(markup)] == ['menu:main']
 
 
 def test_build_stats_response_rated_without_avg():
@@ -269,6 +292,9 @@ def test_build_stats_response_empty_is_stub_with_cta():
     callbacks = [b.callback_data for b in all_buttons(markup)]
     assert callbacks, 'CTA-клавиатура обязана содержать хотя бы одно действие'
     assert 'random:movie' in callbacks or 'retry:top' in callbacks
+    # B2 НЕ меняет пустую ветку: CTA остаётся прежним, ряда «🏠 Меню» в нём нет
+    assert 'menu:main' not in callbacks
+    assert callbacks == [b.callback_data for b in all_buttons(telegram_bot.build_exit_keyboard())]
 
 
 def test_stats_texts_follow_emoji_guideline():
@@ -315,7 +341,8 @@ def test_stats_command_renders_summary_as_html(monkeypatch):
     text, kwargs = message.texts[0]
     assert kwargs['parse_mode'] == 'HTML'
     assert 'Запросов к боту: <b>12</b>' in text
-    assert kwargs['reply_markup'] is None
+    # Точка вызова НЕ игнорирует клавиатуру (риск B2): выход в хаб доставлен
+    assert [b.callback_data for b in all_buttons(kwargs['reply_markup'])] == ['menu:main']
 
 
 def test_stats_command_empty_data_shows_stub_with_cta(monkeypatch):
@@ -330,7 +357,10 @@ def test_stats_command_empty_data_shows_stub_with_cta(monkeypatch):
     text, kwargs = message.texts[0]
     assert text == telegram_bot.STATS_EMPTY_TEXT
     assert '⚠' not in text
-    assert [b.callback_data for b in all_buttons(kwargs['reply_markup'])]
+    callbacks = [b.callback_data for b in all_buttons(kwargs['reply_markup'])]
+    assert callbacks
+    # Пустая ветка НЕ изменилась (B2): CTA без ряда «🏠 Меню»
+    assert 'menu:main' not in callbacks
 
 
 def test_stats_command_db_failure_shows_honest_error_with_retry(monkeypatch):

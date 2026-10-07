@@ -334,8 +334,8 @@ def test_list_response_line_with_badge():
     )
     # Бейдж — в конце строки, перенос строки сразу после него
     assert '🍅 91%\n' in response
-    # A3: ряд номеров (одна кнопка) + отдельный ряд навигации
-    assert len(keyboard.inline_keyboard) == 2
+    # A3: ряд номеров (одна кнопка) + ряд навигации + ряд «🏠 Меню» (C1)
+    assert len(keyboard.inline_keyboard) == 3
 
 
 def test_list_response_mixed_badges():
@@ -352,7 +352,8 @@ def test_list_response_mixed_badges():
     assert lines[1] == '1. <b>Начало</b> (2010) · фантастика · ⭐ 8.8 · 🍅 91%'
     assert lines[2] == '2. <b>Фильм 2</b> (2020) · фантастика · ⭐ 8.0'
     assert response.count('🍅') == 1
-    assert len(keyboard.inline_keyboard) == 2
+    # Ряд номеров (2 кнопки) + ряд навигации + ряд «🏠 Меню» (C1)
+    assert len(keyboard.inline_keyboard) == 3
 
 
 def test_list_response_without_rt_scores_has_no_badge_traces():

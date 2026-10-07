@@ -90,11 +90,86 @@ jobs:
           printf '%s\n' "$ENV_PRODUCTION" | ssh $SSH_OPTS "$VPS_USER@$VPS_HOST" \
             "cat > ~/kinobot/.env.production && chmod 600 ~/kinobot/.env.production"
 
+      - name: Резервное копирование БД (pg_dump)
+        run: |
+          echo "Проверка состояния контейнера PostgreSQL на VPS..."
+          PG_RUNNING=$(ssh $SSH_OPTS "$VPS_USER@$VPS_HOST" \
+            "docker inspect -f '{{.State.Running}}' kinobot_postgres 2>&1") || {
+            # Контейнера ещё нет (первичный деплой на свежий VPS) — пропуск с
+            # предупреждением; ЛЮБОЙ иной сбой ssh/docker фатален: транспортная
+            # ошибка не должна выглядеть как «бэкап не нужен», иначе миграции
+            # покатятся без резервной копии.
+            case "$PG_RUNNING" in
+              *"No such object"*)
+                echo "::warning::kinobot_postgres не найден на VPS — бэкап пропущен (первичный деплой)"
+                exit 0
+                ;;
+              *)
+                echo "::error::Не удалось проверить состояние kinobot_postgres ($PG_RUNNING) — бэкап не снят, деплой прерван"
+                exit 1
+                ;;
+            esac
+          }
+          if [ "$PG_RUNNING" != "true" ]; then
+            echo "::warning::kinobot_postgres не запущен (статус: $PG_RUNNING) — бэкап пропущен"
+            exit 0
+          fi
+          # Бэкап снимается СТРОГО до запуска контейнеров и наката миграций:
+          # применять схему без резервной копии недопустимо, поэтому шаг
+          # фатальный (без `|| true`). Ротация — 7 суток. Дата/время вычисляются
+          # на VPS: `\$` экранирован, иначе подстановку выполнил бы раннер.
+          # БЕЗ пайплайна на удалённой стороне (`pg_dump | gzip`): код возврата
+          # пайплайна — код ПОСЛЕДНЕЙ команды (gzip), сбой pg_dump остался бы
+          # незамеченным, а архив — пустым/битым. Дамп пишется файлом .sql, затем
+          # `gzip -f` того же файла: ненулевой выход pg_dump рвёт цепочку `&&`.
+          # Итоговый архив — ~/kinobot/backups/kinobot_db_<дата_время>.sql.gz.
+          # Учётные данные — дефолты compose (DB_USER=postgres, DB_NAME=kinobot_db);
+          # при иных значениях в .env.production шаг правит оператор.
+          ssh $SSH_OPTS "$VPS_USER@$VPS_HOST" \
+            "mkdir -p ~/kinobot/backups && \
+             DUMP=~/kinobot/backups/kinobot_db_\$(date +%F_%H%M).sql && \
+             docker exec kinobot_postgres pg_dump -U postgres kinobot_db > \$DUMP && \
+             gzip -f \$DUMP && \
+             find ~/kinobot/backups -name 'kinobot_db_*.sql.gz' -mtime +7 -delete"
+          echo "Резервная копия БД сохранена в ~/kinobot/backups/*.sql.gz (хранится 7 суток)."
+
       - name: Запуск контейнеров
         run: |
           ssh $SSH_OPTS "$VPS_USER@$VPS_HOST" \
             "cd ~/kinobot && APP_VERSION=$DEPLOY_TAG \
              docker compose --env-file .env.production -f docker-compose.prod.yml up -d"
+
+      - name: Применение миграций БД (alembic upgrade head)
+        run: |
+          echo "Ожидание 15 секунд: контейнер kinobot должен подняться..."
+          sleep 15
+          # Шаг ФАТАЛЬНЫЙ (без `|| true`): старт с рассинхроном схемы хуже
+          # упавшего деплоя — оператор откатывает релиз (workflow_dispatch на
+          # старый тег), данные защищены бэкапом предыдущего шага. Штатный старт
+          # бота уже накатывает миграции (src/db_migrations.py, fail-silent) —
+          # этот exec-прогон контрольный и идемпотентный (no-op, если схема
+          # актуальна), но даёт деплою явную проверку результата.
+          if ssh $SSH_OPTS "$VPS_USER@$VPS_HOST" \
+            "docker exec kinobot alembic upgrade head"; then
+            echo "Миграции БД применены (alembic upgrade head)."
+          else
+            echo "::error::Миграции БД не применились (alembic upgrade head) — деплой прерван"
+            ssh $SSH_OPTS "$VPS_USER@$VPS_HOST" "docker logs --tail 50 kinobot" || true
+            exit 1
+          fi
+
+      - name: Создание/проверка админа БД (init_db.py)
+        run: |
+          # Шаг НЕфатальный (поглощает задачу T8): init_db.py идемпотентен
+          # (create_all после upgrade head — no-op плюс создание/проверка админа
+          # из ADMIN_PASSWORD), его сбой не должен ронять релиз — логируем
+          # предупреждение и продолжаем до health-чека.
+          if ssh $SSH_OPTS "$VPS_USER@$VPS_HOST" \
+            "docker exec kinobot python init_db.py"; then
+            echo "Админ БД создан/проверен (init_db.py)."
+          else
+            echo "::warning::init_db.py завершился ошибкой — деплой продолжается, админа создать вручную (docs/dev_guide.md)"
+          fi
 
       - name: Проверка результата деплоя
         run: |

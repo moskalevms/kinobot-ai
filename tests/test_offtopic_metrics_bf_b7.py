@@ -16,8 +16,9 @@
 - интеграция с `DialogueManager.process_message`: запись отказа в
   обеих ветках — precheck-блок и llm_offtopic (spy на record_refusal
   в пространстве имён dialogue_manager, LLM мокируется);
-- конвенция init_db.py: db.create_all() есть, сырого CREATE TABLE нет,
-  offtopic_refusals упомянута в перечне таблиц;
+- конвенция init_db.py (тонкая обёртка T14): запускает миграции
+  (apply_database_migrations), сырых CREATE TABLE/ALTER и db.create_all()
+  нет, offtopic_refusals упомянута в перечне таблиц;
 - админ-роут /admin/offtopic: аноним → редирект на login, админ →
   200 и фрагмент в теле; пользовательский фрагмент с HTML/JS
   рендерится ЭКРАНИРОВАННО (Jinja2 autoescape — регрессия XSS),
@@ -95,11 +96,18 @@ def test_create_all_creates_offtopic_refusals(sqlite_app):
         assert {'id', 'user_id', 'reason', 'message_fragment', 'created_at'} <= column_names
 
 
-def test_init_db_has_no_raw_sql_and_mentions_offtopic_refusals():
-    """init_db.py: схема НЕ дублируется сырым SQL, таблица создаётся create_all."""
+def test_init_db_runs_migrations_and_mentions_offtopic_refusals():
+    """init_db.py: тонкая обёртка T14 — схема накатывается миграциями, не дублируется.
+
+    Единственный источник DDL — migrations/ (alembic upgrade head через хелпер
+    apply_database_migrations): в файле нет ни сырых DDL, ни create_all.
+    """
     text = (ROOT / 'init_db.py').read_text(encoding='utf-8')
-    assert 'CREATE TABLE' not in text.upper()
-    assert 'db.create_all()' in text
+    upper = text.upper()
+    assert 'CREATE TABLE' not in upper
+    assert 'ALTER' not in upper
+    assert 'db.create_all()' not in text
+    assert 'apply_database_migrations' in text
     assert 'offtopic_refusals' in text.lower()
 
 
